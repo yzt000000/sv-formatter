@@ -3,17 +3,17 @@
   "displayName": "SystemVerilog Formatter",
   "description": "Structure-driven SystemVerilog formatter: indentation derived from the parse tree, column alignment, macro-safe, and idempotent.",
   "version": "0.1.0",
-  "publisher": "fanwenjie",
+  "publisher": "yzt000000",
   "license": "MIT",
   "icon": "images/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/fanwenjie/sv-formatter.git"
+    "url": "https://github.com/yzt000000/sv-formatter.git"
   },
   "bugs": {
-    "url": "https://github.com/fanwenjie/sv-formatter/issues"
+    "url": "https://github.com/yzt000000/sv-formatter/issues"
   },
-  "homepage": "https://github.com/fanwenjie/sv-formatter#readme",
+  "homepage": "https://github.com/yzt000000/sv-formatter#readme",
   "engines": {
     "vscode": "^1.75.0",
     "node": ">=18"

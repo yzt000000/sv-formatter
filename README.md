@@ -335,8 +335,11 @@ in the extension host process; no file content ever leaves your machine.
 npm install
 npm test                     # 209 assertions
 npx vsce package             # produces sv-formatter-0.1.0.vsix
-npx vsce publish             # requires a Marketplace publisher + Azure DevOps PAT
+npx vsce publish --pat $VSCE_PAT
 ```
+
+The CI workflow runs the test suite on Linux, Windows and macOS across Node 18
+and 20, and packages the extension on every push.
 
 Prebuilt native bindings are bundled for Windows, macOS and Linux on x64 and
 arm64, so no compiler is needed at install time on any of those targets.

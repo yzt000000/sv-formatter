@@ -32,4 +32,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   UVM classes, tab indentation, empty input and syntax-error input.
 - Prebuilt native bindings for Windows, macOS and Linux on both x64 and arm64.
 
-[0.1.0]: https://github.com/fanwenjie/sv-formatter/releases/tag/v0.1.0
+[0.1.0]: https://github.com/yzt000000/sv-formatter/releases/tag/v0.1.0
