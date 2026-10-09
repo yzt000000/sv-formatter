@@ -1,0 +1,170 @@
+{
+  "name": "sv-formatter",
+  "displayName": "SystemVerilog Formatter",
+  "description": "Structure-driven SystemVerilog formatter: indentation derived from the parse tree, column alignment, macro-safe, and idempotent.",
+  "version": "0.1.0",
+  "publisher": "fanwenjie",
+  "license": "MIT",
+  "icon": "images/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fanwenjie/sv-formatter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/fanwenjie/sv-formatter/issues"
+  },
+  "homepage": "https://github.com/fanwenjie/sv-formatter#readme",
+  "engines": {
+    "vscode": "^1.75.0",
+    "node": ">=18"
+  },
+  "categories": [
+    "Formatters"
+  ],
+  "keywords": [
+    "systemverilog",
+    "verilog",
+    "formatter",
+    "tree-sitter",
+    "rtl",
+    "hdl",
+    "fpga",
+    "asic",
+    "alignment"
+  ],
+  "activationEvents": [
+    "onLanguage:systemverilog",
+    "onLanguage:verilog"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "systemverilog",
+        "aliases": [
+          "SystemVerilog",
+          "systemverilog",
+          "sv"
+        ],
+        "extensions": [
+          ".sv",
+          ".svh",
+          ".vh"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "SystemVerilog Formatter",
+      "properties": {
+        "systemverilogFormatter.indentSize": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "maximum": 16,
+          "description": "Number of spaces per indentation level. Ignored when useTabs is true."
+        },
+        "systemverilogFormatter.useTabs": {
+          "type": "boolean",
+          "default": false,
+          "description": "Indent with tabs instead of spaces."
+        },
+        "systemverilogFormatter.explodePortList": {
+          "type": "boolean",
+          "default": true,
+          "description": "Put each module port on its own line."
+        },
+        "systemverilogFormatter.explodeDeclarations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Put each declared signal on its own line, repeating the full type prefix (wire a, b; becomes two wire declarations)."
+        },
+        "systemverilogFormatter.explodeInstancePorts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Put each instance port connection on its own line."
+        },
+        "systemverilogFormatter.alignPortsInHeader": {
+          "type": "boolean",
+          "default": true,
+          "description": "Align the direction, type, width and name columns of module ports and declarations."
+        },
+        "systemverilogFormatter.alignDeclarationTerminators": {
+          "type": "boolean",
+          "default": true,
+          "description": "Align the trailing ; and , of consecutive declarations."
+        },
+        "systemverilogFormatter.alignConsecutiveAssignments": {
+          "type": "boolean",
+          "default": true,
+          "description": "Align the assignment operator of consecutive assignment statements."
+        },
+        "systemverilogFormatter.alignConsecutiveDeclarations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Align the declared names of consecutive declarations."
+        },
+        "systemverilogFormatter.spaceAroundBinaryOperators": {
+          "type": "boolean",
+          "default": true,
+          "description": "Put spaces around binary operators."
+        },
+        "systemverilogFormatter.spaceAfterComma": {
+          "type": "boolean",
+          "default": true,
+          "description": "Put a space after commas."
+        },
+        "systemverilogFormatter.maxConsecutiveBlankLines": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0,
+          "maximum": 5,
+          "description": "Maximum number of consecutive blank lines to keep."
+        },
+        "systemverilogFormatter.ensureTrailingNewline": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ensure the file ends with exactly one newline."
+        },
+        "systemverilogFormatter.formatOnParseError": {
+          "type": "boolean",
+          "default": false,
+          "description": "Format even when the source has syntax errors. Off by default to avoid mangling incomplete code."
+        },
+        "systemverilogFormatter.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages"
+          ],
+          "default": "off",
+          "description": "Trace formatting requests (for debugging the extension)."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "svFormatter.formatDocument",
+        "title": "Format SystemVerilog Document",
+        "category": "SV Formatter"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "svFormatter.formatDocument",
+          "when": "editorLangId == systemverilog",
+          "group": "1_modification@1"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "test": "node test/run-tests.js"
+  },
+  "dependencies": {
+    "tree-sitter": "^0.25.1",
+    "tree-sitter-systemverilog": "^0.4.1"
+  }
+}

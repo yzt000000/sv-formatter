@@ -1,0 +1,53 @@
+# Dependencies: keep only what is needed at runtime.
+#
+# tree-sitter-systemverilog unpacks to ~220 MB, almost all of it artifacts that
+# VSCode never loads. The breakdown:
+#
+#   prebuilds/            ~138 MB  6 platform binaries; only one is ever loaded
+#   src/parser.c           ~64 MB  generated parser source, already compiled in
+#   *.wasm                 ~22 MB  for the web/wasm target, unused by the desktop extension
+#   grammar.json/node-types.json ~1.3 MB  build-time metadata
+#
+# The native binding is found through node-gyp-build, which scans
+# `prebuilds/<platform>-<arch>/`. Every platform is kept so the published
+# extension works on Windows, macOS and Linux without a rebuild; only the
+# sources and the unused wasm build are dropped.
+node_modules/tree-sitter-systemverilog/src/**
+node_modules/tree-sitter-systemverilog/tree-sitter-systemverilog.wasm
+node_modules/tree-sitter-systemverilog/grammar.js
+node_modules/tree-sitter-systemverilog/binding.gyp
+node_modules/tree-sitter-systemverilog/tree-sitter.json
+node_modules/**/test/**
+node_modules/**/tests/**
+node_modules/**/.github/**
+node_modules/**/*.md
+node_modules/**/*.map
+node_modules/**/tsconfig.json
+
+# tree-sitter ships sources that are only needed to build the native module.
+node_modules/tree-sitter/src/**
+node_modules/tree-sitter/lib/binding.cc
+node_modules/tree-sitter/loader.cc
+node_modules/tree-sitter/starter.cc
+node_modules/tree-sitter/binding.gyp
+
+# Development-only files
+.vscode/**
+.github/**
+.vscode-test/**
+samples/**
+test/**
+tools/**
+# images/ is excluded above its icon: the marketplace listing needs icon.png.
+images/**
+!images/icon.png
+**/*.map
+**/tsconfig.json
+**/.eslintrc.json
+**/.editorconfig
+**/.gitignore
+**/.gitattributes
+.gitignore
+
+# Build output of the previous package run
+*.vsix
