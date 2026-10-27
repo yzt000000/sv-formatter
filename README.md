@@ -21,6 +21,7 @@
 | 注释安全 | 块注释内部逐行原样输出，重复格式化不会累积缩进 |
 | 语法错误保护 | 解析失败时默认**拒绝格式化**，可选覆盖 |
 | 幂等 | `format(format(x)) == format(x)`，有测试保证 |
+| **分段格式化** | 选中任意一段代码执行 `Format SystemVerilog Selection Only`，只重排选区、选区外逐字节不变，缩进按选区首行推断的基础层级 + 引擎结构推导 |
 
 ## 样式示例
 
@@ -195,6 +196,41 @@ code --install-extension sv-formatter-0.1.0.vsix
 ```
 
 配合 VSCode 的 `editor.formatOnSave` 使用即可自动格式化。
+
+## 分段格式化（Format Selection Only）
+
+除了整篇格式化，本插件支持**只格式化选中那一段**，选区外的代码逐字节保持不变。
+
+用法：
+
+1. 选中要整理的代码（一段 `always` 块、一组声明、一个 instance 等均可）。
+2. 右键 → **Format SystemVerilog Selection Only**，或命令面板执行同名命令，
+   或在 `keybindings.json` 里绑定快捷键：
+
+   ```json
+   {
+     "key": "ctrl+alt+f",
+     "command": "svFormatter.formatSelectionOnly",
+     "when": "editorLangId == systemverilog && editorHasSelection"
+   }
+   ```
+
+行为细节：
+
+- 选区自动**扩展到包含它的最小完整语法块**（`always_construct` / `data_declaration` /
+  `module_declaration` / `function_declaration` / `generate` …），整块格式化，**块外逐字节不变**。
+  块边界是语法自然的，因此块内展开多行、列宽变化都不会把缩进或对齐泄漏到块外。
+- 选区恰好是完整块时，扩展后就是它本身；选区落在块内部（如只选了 `if` 那一行）时，
+  会向上扩到包含它的 `always`/`begin-end` 块。
+- 缩进按块**首行非空行的前导空白**推断基础层级，量化到 `indentSize`（或 tab 站），
+  引擎在隔离块上做结构化缩进，最终每行 = 基础前缀 + 引擎缩进。
+- 块有语法错误时默认跳过（受 `formatOnParseError` 控制），不会破坏代码。
+- 块外的文本不被触碰，因此可以放心只整理局部而不影响其余代码。
+
+> VSCode 自带的 `Format Selection`（`Ctrl+K Ctrl+F`）走的是
+> `registerDocumentRangeFormattingEditProvider`，本插件也注册了它，但其实现
+> 是"格式化整篇再切片"。**只想要局部独立格式化、不动选区外**时，请用
+> `Format SystemVerilog Selection Only` 命令。
 
 ## 示例
 

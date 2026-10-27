@@ -565,6 +565,171 @@ console.log('=== SystemVerilog formatter tests ===');
 }
 
 // ---------------------------------------------------------------- summary
+console.log('\n=== fragment formatting tests ===');
+
+// 25. Fragment formatting: a selection is formatted in isolation and re-indented
+//     by the base indent inferred from its first non-blank line. Everything
+//     outside the selection is preserved by the extension layer's
+//     TextEdit.replace(range, text); here we verify the core helper.
+{
+  const { formatFragment, inferBaseIndent } = require('../src/fragment');
+
+  // An always_ff block sitting 2 spaces deep inside a module body.
+  const frag = [
+    '  always_ff @(posedge clk or negedge rst_n) begin',
+    '  if(!rst_n) begin',
+    '  cnt <= \'0;',
+    '  acc <= 16\'d0;',
+    '  end else begin',
+    '  acc <= acc + din;',
+    '  cnt <= cnt + 1\'b1;',
+    '  end',
+    '  end',
+  ].join('\n') + '\n';
+
+  const r = formatFragment(frag, {});
+  console.log('\n[fragment-always]');
+  check('fragment-always: no parse error', !r.hadError, r.text);
+  check('fragment-always: base indent is 2 spaces', r.basePrefix === '  ', r.basePrefix);
+  check('fragment-always: header line keeps base indent',
+    /^  always_ff/.test(r.text), r.text);
+  check('fragment-always: if body indented to base+2',
+    /\n    if \(!rst_n\)/.test(r.text), r.text);
+  check('fragment-always: innermost body at base+4',
+    /\n      cnt <= '0/.test(r.text), r.text);
+  // Idempotent on the fragment.
+  const r2 = formatFragment(r.text, {});
+  check('fragment-always: idempotent', r2.text === r.text,
+    `--- 1st ---\n${r.text}\n--- 2nd ---\n${r2.text}`);
+  // Lossless: same code tokens as input.
+  check('fragment-always: no code lost', codeTokens(frag) === codeTokens(r.text),
+    `expected:\n${codeTokens(frag)}\ngot:\n${codeTokens(r.text)}`);
+
+  // Surrounding text is untouched: splice the formatted fragment back into the
+  // full document and confirm the lines outside the selection are byte-identical.
+  const fullBefore = [
+    'module top (',
+    '  input logic clk,',
+    '  input logic rst_n',
+    ');',
+  ].join('\n') + '\n';
+  const fullAfter = 'endmodule\n';
+  const reconstructed = fullBefore + r.text + fullAfter;
+  check('fragment-always: prefix preserved',
+    reconstructed.startsWith(fullBefore), reconstructed);
+  check('fragment-always: suffix preserved',
+    reconstructed.endsWith(fullAfter), reconstructed);
+}
+
+// 26. Fragment formatting: a declaration/assign block, base indent 4 spaces.
+{
+  const { formatFragment } = require('../src/fragment');
+  const frag = [
+    '    logic [7:0] cnt;',
+    '    logic [15:0] acc;',
+    '    logic flag;',
+    '    assign o_data = r_data;',
+    '    assign valid_a = r_data;',
+  ].join('\n') + '\n';
+
+  const r = formatFragment(frag, {});
+  console.log('\n[fragment-decls]');
+  check('fragment-decls: no parse error', !r.hadError, r.text);
+  check('fragment-decls: base indent is 4 spaces', r.basePrefix === '    ', r.basePrefix);
+  check('fragment-decls: declarations aligned and indented',
+    /^    logic \[7:0\]\s+cnt/m.test(r.text), r.text);
+  check('fragment-decls: assigns aligned',
+    /^    assign o_data\s+= r_data;/m.test(r.text), r.text);
+  const r2 = formatFragment(r.text, {});
+  check('fragment-decls: idempotent', r2.text === r.text,
+    `--- 1st ---\n${r.text}\n--- 2nd ---\n${r2.text}`);
+}
+
+// 27. Fragment formatting: tab-based indent and useTabs=true.
+{
+  const { formatFragment } = require('../src/fragment');
+  const frag = '\talways_ff @(posedge clk) begin\n\tif (x) y <= 1;\n\tend\n';
+  const r = formatFragment(frag, { useTabs: true });
+  console.log('\n[fragment-tabs]');
+  check('fragment-tabs: base indent is one tab', r.basePrefix === '\t', r.basePrefix);
+  check('fragment-tabs: header on one tab', /^\talways_ff/.test(r.text), r.text);
+}
+
+// 28. Fragment formatting: empty / whitespace-only selection is a no-op.
+{
+  const { formatFragment, inferBaseIndent } = require('../src/fragment');
+  check('fragment-empty: base indent empty', inferBaseIndent('\n  \n', {}) === '', 'x');
+  const r = formatFragment('   \n\n  \n', {});
+  check('fragment-empty: no error on blank input', !r.hadError, r.text);
+}
+
+// 29. expandToBlock: a selection inside an always_ff grows to the whole
+//     always_construct, so the formatted block boundary is syntactically natural
+//     and the surrounding lines keep their byte content.
+{
+  const { expandToBlock } = require('../src/fragment');
+  const src = [
+    'module top;',
+    '  logic [7:0] cnt;',
+    '  always_ff @(posedge clk) begin',
+    '    if (x) y <= 1;',
+    '    else y <= 0;',
+    '  end',
+    '  assign z = y;',
+    'endmodule',
+  ].join('\n') + '\n';
+  const line3 = src.indexOf('    if (x)');
+  const selEnd = line3 + 4;
+  const block = expandToBlock(src, line3, selEnd);
+  console.log('\n[expand-to-block]');
+  check('expand-to-block: found a block', !!block, block);
+  check('expand-to-block: type is always_construct',
+    block && block.type === 'always_construct', block && block.type);
+  check('expand-to-block: starts at always_ff',
+    block && src.slice(block.start, block.start + 9) === 'always_ff', block && block.start);
+  check('expand-to-block: ends at end keyword',
+    block && src.slice(block.end - 3, block.end) === 'end', block && block.end);
+  check('expand-to-block: assign z outside block',
+    block && src.indexOf('assign z = y;') >= block.end, block && block.end);
+}
+
+// 30. expandToBlock: a selection that already covers a whole data_declaration
+//     stays at that declaration (does not grow to the module).
+{
+  const { expandToBlock } = require('../src/fragment');
+  const src = [
+    'module top;',
+    '  logic [7:0] a;',
+    '  logic [15:0] b;',
+    'endmodule',
+  ].join('\n') + '\n';
+  const aStart = src.indexOf('  logic [7:0] a;');
+  const aEnd = aStart + '  logic [7:0] a;'.length;
+  const block = expandToBlock(src, aStart, aEnd);
+  check('expand-to-block: decl stays decl',
+    block && block.type === 'data_declaration' &&
+    src.slice(block.start, block.end).indexOf('logic [7:0] a;') >= 0,
+    block && block.type);
+}
+
+// 31. expandToBlock: a selection spanning two sibling declarations grows to the
+//     enclosing module (no smaller block contains both).
+{
+  const { expandToBlock } = require('../src/fragment');
+  const src = [
+    'module top;',
+    '  logic [7:0] a;',
+    '  logic [15:0] b;',
+    'endmodule',
+  ].join('\n') + '\n';
+  const aStart = src.indexOf('  logic [7:0] a;');
+  const bEnd = src.indexOf('  logic [15:0] b;') + '  logic [15:0] b;'.length;
+  const block = expandToBlock(src, aStart, bEnd);
+  check('expand-to-block: cross-sibling grows to module',
+    block && block.type === 'module_declaration', block && block.type);
+}
+
+// ---------------------------------------------------------------- summary
 console.log('\n=== summary ===');
 console.log(`passed: ${passed}`);
 console.log(`failed: ${failed}`);

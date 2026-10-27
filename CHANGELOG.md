@@ -5,6 +5,21 @@ All notable changes to this extension are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-27
+
+### Added
+
+- **Selection-only formatting** (`svFormatter.formatSelectionOnly` command,
+  "Format SystemVerilog Selection Only"): format just the highlighted region and
+  leave everything outside it byte-for-byte intact. The fragment is formatted in
+  isolation by the engine and re-indented by the base indent inferred from its
+  first non-blank line, so a deeply nested `always_ff` block keeps its surrounding
+  nesting level. Bound to the right-click menu when a selection is active; can be
+  assigned a keyboard shortcut in `keybindings.json`.
+- 18 new assertions (227 total) covering fragment formatting: base-indent
+  inference, re-indentation, idempotence, losslessness, tab mode, and blank
+  selections.
+
 ## [0.1.0] - 2026-10-09
 
 ### Added

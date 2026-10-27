@@ -2,6 +2,7 @@
 
 const vscode = require('vscode');
 const { format } = require('./formatter');
+const { formatFragment, expandToBlock } = require('./fragment');
 
 const CONFIG_SECTION = 'systemverilogFormatter';
 
@@ -156,6 +157,81 @@ function activate(context) {
       }
       const edit = new vscode.WorkspaceEdit();
       edit.set(editor.document.uri, edits);
+      await vscode.workspace.applyEdit(edit);
+    }),
+    vscode.commands.registerCommand('svFormatter.formatSelectionOnly', async () => {
+      const editor = vscode.window.activeTextEditor;
+      if (!editor) return;
+      const { document, selection } = editor;
+
+      if (selection.isEmpty) {
+        vscode.window.showInformationMessage(
+          'SV Formatter: 请先选中一段代码，再执行 Format Selection Only。'
+        );
+        return;
+      }
+      const lang = document.languageId;
+      if (lang !== 'systemverilog' && lang !== 'verilog') {
+        vscode.window.showWarningMessage(
+          'SV Formatter: 当前文件不是 SystemVerilog / Verilog。'
+        );
+        return;
+      }
+
+      const config = readConfig();
+      const trace = vscode.workspace.getConfiguration(CONFIG_SECTION).get('trace.server', 'off');
+
+      const source = document.getText();
+
+      // Expand the selection to whole lines. The replacement covers from the
+      // start line's first column up to (but not including) the line after the
+      // last touched line, so the trailing newline of the last line is included
+      // and the following line is left intact.
+      const startLine = selection.start.line;
+      const endLine = selection.end.line + (selection.end.character === 0 ? 0 : 1);
+      const selStart = document.offsetAt(new vscode.Position(startLine, 0));
+      const selEnd = endLine >= document.lineCount
+        ? source.length
+        : document.offsetAt(new vscode.Position(endLine, 0));
+
+      // Grow the selection to the smallest block-level syntax node that contains
+      // it (always_construct / data_declaration / module_declaration / …). The
+      // block boundary is syntactically natural, so re-formatting it never
+      // dangles indentation into the surrounding text and line-count changes
+      // inside the block do not realign anything outside it. Falls back to the
+      // raw line range when the document does not parse or the range is not
+      // inside any block.
+      let fmtStart = selStart;
+      let fmtEnd = selEnd;
+      const block = expandToBlock(source, selStart, selEnd);
+      if (block) {
+        fmtStart = source.lastIndexOf('\n', block.start) + 1;
+        let lineEnd = source.indexOf('\n', block.end);
+        fmtEnd = lineEnd === -1 ? source.length : lineEnd + 1;
+      }
+
+      const fragText = source.slice(fmtStart, fmtEnd);
+      if (!fragText.trim()) return;
+
+      const { text: formatted, hadError } = formatFragment(fragText, config);
+      if (trace === 'messages') {
+        console.log(`[sv-formatter] selection ${document.fileName}: ` +
+          `block=${block ? block.type : 'line-range'} hadError=${hadError}`);
+      }
+      if (hadError && !config.formatOnParseError) {
+        vscode.window.showWarningMessage(
+          'SV Formatter: 选区有语法错误，已跳过 ' +
+          '(enable systemverilogFormatter.formatOnParseError to override).'
+        );
+        return;
+      }
+
+      const replaceRange = new vscode.Range(
+        document.positionAt(fmtStart),
+        document.positionAt(fmtEnd)
+      );
+      const edit = new vscode.WorkspaceEdit();
+      edit.set(document.uri, [vscode.TextEdit.replace(replaceRange, formatted)]);
       await vscode.workspace.applyEdit(edit);
     })
   );
