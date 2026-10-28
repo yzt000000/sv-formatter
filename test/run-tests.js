@@ -110,7 +110,11 @@ function checkLossless(name, src, result) {
 }
 
 function checkBalance(name, result) {
-  const text = result.text;
+  // Mask comments and string literals so keywords inside them don't skew counts.
+  const text = result.text
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\/\/[^\n]*/g, ' ')
+    .replace(/"(?:[^"\\]|\\.)*"/g, ' ');
   const count = (re) => (text.match(re) || []).length;
   const begins = count(/\bbegin\b/g);
   const ends = count(/\bend\b/g);
@@ -489,8 +493,8 @@ console.log('=== SystemVerilog formatter tests ===');
     r.text.split('\n').filter((l) => /localparam/.test(l)).every(
       (l) => /= [^;]+;?\s*$/.test(l)), r.text);
   check('localparam: shares the declaration alignment group',
-    /\n {2}localparam int A {2}= 1/.test(r.text) ||
-    /\n {2}localparam int A += 1/.test(r.text), r.text);
+    /\n {2}localparam int\s+A\s{2,}= 1/.test(r.text) ||
+    /\n {2}localparam int\s+A\s+= 1/.test(r.text), r.text);
 }
 
 // 21. Continuous assigns align both the operator and the trailing `;`.

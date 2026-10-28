@@ -127,6 +127,8 @@ class Formatter {
       case 'generate_construct':
       case 'loop_generate_construct':
       case 'conditional_generate_construct':
+      case 'if_generate_construct':
+      case 'generate_block':
         return this.generate(node);
 
       case 'module_instantiation':
@@ -148,6 +150,17 @@ class Formatter {
       case 'genvar_declaration':
         return this.line(this.text(node));
 
+      case 'module_item':
+      case 'module_or_generate_item':
+      case 'block_item_declaration': {
+        const inner = namedChildren(node).find((k) => !isCommentNode(k));
+        if (inner) {
+          if (inner.type === 'port_declaration') return this.declaration(node);
+          return this.moduleItem(inner);
+        }
+        return this.line(this.text(node));
+      }
+
       default:
         return this.line(this.text(node));
     }
@@ -163,10 +176,26 @@ class Formatter {
     this.indent++;
     if (header) {
       this.moduleHeader(header);
-      for (const item of items) this.moduleItem(item);
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (i > 0 && isCommentNode(item) &&
+            items[i - 1].endPosition.row === item.startPosition.row) {
+          this.appendTrailingComment(item);
+          continue;
+        }
+        this.moduleItem(item);
+      }
     } else if (items.length) {
       this.emit(this.text(items[0]), { indent: 0, group: 'header' });
-      for (const item of items.slice(1)) this.moduleItem(item);
+      for (let i = 1; i < items.length; i++) {
+        const item = items[i];
+        if (isCommentNode(item) &&
+            items[i - 1].endPosition.row === item.startPosition.row) {
+          this.appendTrailingComment(item);
+          continue;
+        }
+        this.moduleItem(item);
+      }
     }
     this.indent--;
 
@@ -204,7 +233,7 @@ class Formatter {
     }
 
     const ports = portDeclarations(portList, this.src);
-    if (!ports.length) {
+    if (!ports.length && !paramList) {
       this.emit(this.text(header), { indent: 0, group: 'header' });
       return;
     }
@@ -219,18 +248,42 @@ class Formatter {
     if (paramList && paramList.startIndex < portList.startIndex) {
       this.emit('#(', { indent: 0, group: 'param-open' });
       for (const p of parameterDeclarations(paramList, this.src)) {
-        this.emit(p, { indent: 0, group: 'param' });
+        if (p.isComment) { this.emit(p.comment, { indent: 0, group: 'param' }); continue; }
+        this.emit(p.text, { indent: 0, group: 'param' });
       }
-      this.emit(') (', { indent: 0, group: 'param-close' });
+      // Capture trailing comments between the parameter list `)` and the port list `(`.
+      const between = this.src.slice(paramList.endIndex, portList.startIndex);
+      const trailingCmt = between.replace(/[)\s]+/, '').trim();
+      if (trailingCmt.startsWith('//')) {
+        this.emit(')', { indent: 0, group: 'param-close' });
+        this.emit(trailingCmt, { indent: 0, group: 'param' });
+        this.emit('(', { indent: 0, group: 'param-close' });
+      } else {
+        this.emit(') (', { indent: 0, group: 'param-close' });
+      }
     } else {
       // No parameter list: the port list opens right after the module name.
       this.emit('(', { indent: 0, group: 'header-open' });
     }
 
-    ports.forEach((p, i) => {
+    const realPorts = ports.filter((p) => !p.isComment && !p.isRaw);
+    ports.forEach((p) => {
+      if (p.isComment) {
+        this.emit(p.comment, { indent: 0, group: 'port' });
+        return;
+      }
+      if (p.isRaw) {
+        for (const seg of p.text.split(/\r\n|\r|\n/)) {
+          const t = seg.trim();
+          if (t) this.emit(t, { indent: 0, group: 'port' });
+        }
+        return;
+      }
+      const idx = realPorts.indexOf(p);
       const text = collapse(p.text);
-      const comma = p.isText ? '' : (i === ports.length - 1 ? '' : ',');
-      this.emit(text + comma, { indent: 0, group: 'port' });
+      const comma = p.isText ? '' : (idx === realPorts.length - 1 ? '' : ',');
+      const cmt = p.comment ? ' ' + p.comment : '';
+      this.emit(text + comma + cmt, { indent: 0, group: 'port' });
     });
     this.emit(');', { indent: 0, group: 'header-end' });
   }
@@ -258,6 +311,8 @@ class Formatter {
       case 'generate_construct':
       case 'loop_generate_construct':
       case 'conditional_generate_construct':
+      case 'if_generate_construct':
+      case 'generate_block':
         return this.generate(node);
 
       case 'module_instantiation':
@@ -277,22 +332,120 @@ class Formatter {
       case 'class_declaration':
         return this.classDeclaration(node);
 
+      case 'module_item':
+      case 'module_or_generate_item':
+      case 'block_item_declaration': {
+        const inner = namedChildren(node).find((k) => !isCommentNode(k));
+        if (inner) {
+          if (inner.type === 'port_declaration') return this.declaration(node);
+          return this.moduleItem(inner);
+        }
+        return this.line(this.text(node));
+      }
+
       default:
         return this.line(this.text(node));
     }
   }
 
   generate(node) {
-    const kids = namedChildren(node);
-    const first = kids[0];
-    if (first) {
-      this.emit(this.text(first), { indent: this.indent, group: 'gen-head' });
-      this.indent++;
-      for (const k of kids.slice(1)) this.moduleItem(k);
-      this.indent--;
-      return;
+    switch (node.type) {
+      case 'generate_region': {
+        // `generate <items...> endgenerate` — emit the keyword, recurse, close.
+        this.emit('generate', { indent: this.indent, group: 'gen-head' });
+        this.indent++;
+        for (const k of namedChildren(node)) {
+          if (isCommentNode(k)) { this.commentBlock(k); continue; }
+          this.generate(k);
+        }
+        this.indent--;
+        this.emit('endgenerate', { indent: this.indent, group: 'gen-head' });
+        return;
+      }
+      case 'generate_construct': {
+        for (const k of namedChildren(node)) this.generate(k);
+        return;
+      }
+      case 'conditional_generate_construct': {
+        // Wraps if_generate_construct / case_generate_construct.
+        for (const k of namedChildren(node)) this.generate(k);
+        return;
+      }
+      case 'if_generate_construct': {
+        // children: constant_expression (cond), generate_block (then [, else])
+        const kids = namedChildren(node);
+        const cond = kids.find((k) => k.type === 'constant_expression' || k.type === 'expression');
+        const blocks = kids.filter((k) => k.type === 'generate_block');
+        const elseIf = kids.find((k) => k.type === 'if_generate_construct');
+        if (cond) {
+          this.emit('if (' + collapse(this.text(cond)) + ')', { indent: this.indent, group: 'gen-head' });
+        } else {
+          this.emit('if', { indent: this.indent, group: 'gen-head' });
+        }
+        if (blocks[0]) this.generate(blocks[0]);
+        if (elseIf) {
+          this.emit('else', { indent: this.indent, group: 'gen-head' });
+          this.generate(elseIf);
+        } else if (blocks[1]) {
+          this.emit('else', { indent: this.indent, group: 'gen-head' });
+          this.generate(blocks[1]);
+        }
+        return;
+      }
+      case 'loop_generate_construct': {
+        // children: genvar_initialization, constant_expression, genvar_iteration, generate_block
+        const kids = namedChildren(node);
+        const init = kids.find((k) => k.type === 'genvar_initialization');
+        const cond = kids.find((k) => k.type === 'constant_expression');
+        const iter = kids.find((k) => k.type === 'genvar_iteration');
+        const block = kids.find((k) => k.type === 'generate_block');
+        const parts = [];
+        if (init) parts.push(collapse(this.text(init)));
+        if (cond) parts.push(collapse(this.text(cond)));
+        if (iter) parts.push(collapse(this.text(iter)));
+        this.emit('for (' + parts.join('; ') + ')', { indent: this.indent, group: 'gen-head' });
+        if (block) this.generate(block);
+        return;
+      }
+      case 'generate_block': {
+        // `begin : name <items...> end` (name optional).
+        const kids = namedChildren(node);
+        const nameNode = kids.find((k) => k.type === 'simple_identifier');
+        const items = kids.filter((k) => k.type !== 'simple_identifier');
+        // A block without a name and with a single non-block item is often an
+        // implicit wrapper — inline its item to avoid spurious begin/end.
+        if (!nameNode && items.length === 1 && !BLOCK_NODE_TYPES.has(items[0].type)) {
+          this.moduleItem(items[0]);
+          return;
+        }
+        if (nameNode) {
+          this.emit('begin : ' + nameNode.text, { indent: this.indent, group: 'gen-block' });
+        } else {
+          this.emit('begin', { indent: this.indent, group: 'gen-block' });
+        }
+        this.indent++;
+        for (const it of items) {
+          if (isCommentNode(it)) { this.commentBlock(it); continue; }
+          this.moduleItem(it);
+        }
+        this.indent--;
+        this.emit('end', { indent: this.indent, group: 'gen-block' });
+        return;
+      }
+      default: {
+        // Unknown generate-shaped node: peel named children like the original.
+        const kids = namedChildren(node);
+        const first = kids[0];
+        if (first) {
+          this.emit(this.text(first), { indent: this.indent, group: 'gen-head' });
+          this.indent++;
+          for (const k of kids.slice(1)) this.moduleItem(k);
+          this.indent--;
+          return;
+        }
+        this.line(this.text(node));
+      }
     }
-    this.line(this.text(node));
   }
 
   /**
@@ -317,11 +470,24 @@ class Formatter {
     }
 
     const openParen = this.src.indexOf('(', inst.startIndex);
-    const head = collapse(this.src.slice(node.startIndex, openParen + 1));
-    this.emit(head, { indent: this.indent, group: 'inst-head' });
+    const headRaw = this.src.slice(node.startIndex, openParen + 1);
+    for (const seg of collapseHeadSegments(headRaw)) {
+      this.emit(seg, { indent: this.indent, group: 'inst-head' });
+    }
 
     this.indent++;
     ports.forEach((p, i) => {
+      if (p.comment && !p.text) {
+        this.emit(p.comment, { indent: this.indent, group: 'inst-port' });
+        return;
+      }
+      if (p.isRaw) {
+        for (const seg of p.text.split(/\r\n|\r|\n/)) {
+          const t = seg.trim();
+          if (t) this.emit(t, { indent: this.indent, group: 'inst-port' });
+        }
+        return;
+      }
       const last = i === ports.length - 1;
       const body = collapse(p.text).replace(/\s*$/, '');
       const text = body.endsWith(',') ? body : body + (last ? '' : ',');
@@ -491,11 +657,14 @@ class Formatter {
       if (body) timingText = collapse(this.src.slice(inner.startIndex, body.startIndex));
     }
 
-    const head = collapse(headKeyword + (timingText ? ' ' + timingText : ''));
+    const headRaw = headKeyword + (timingText ? ' ' + timingText : '');
+    const { text: headClean, comments: headComments } = stripLineComments(headRaw);
+    let head = collapse(headClean);
+    for (const c of headComments) head += ' ' + c;
     this.emit(head, { indent: this.indent, group: 'always-head' });
 
     if (!body) return;
-    this.hangBlock = true;
+    this.hangBlock = !headComments.length;
     this.statement(body);
     this.hangBlock = false;
   }
@@ -566,7 +735,11 @@ class Formatter {
         label = k.text;
         continue;
       }
-      body.push(...unwrapStatements(k));
+      // Comments and other leaf nodes are not statement wrappers — push them
+      // directly so unwrapStatements does not drop them (it returns [] for
+      // childless nodes).
+      if (STATEMENT_WRAPPERS.has(k.type)) body.push(...unwrapStatements(k));
+      else body.push(k);
     }
 
     this.emit('begin' + (label ? ' : ' + label : ''), {
@@ -575,7 +748,15 @@ class Formatter {
       joinPrev: !!hang,
     });
     this.indent++;
-    for (const k of body) this.statementItem(k);
+    for (let i = 0; i < body.length; i++) {
+      const k = body[i];
+      if (i > 0 && isCommentNode(k) &&
+          body[i - 1].endPosition.row === k.startPosition.row) {
+        this.appendTrailingComment(k);
+        continue;
+      }
+      this.statementItem(k);
+    }
     this.indent--;
     this.emit('end', { indent: this.indent, group: 'end' });
   }
@@ -584,14 +765,21 @@ class Formatter {
     const kids = namedChildren(node);
     const branches = collectConditional(kids);
     for (const br of branches) {
-      if (br.elseIf) {
-        this.emit('else if' + (br.cond ? ' ' + br.cond : ''), { indent: this.indent, group: 'cond' });
-      } else if (br.else) {
-        this.emit('else', { indent: this.indent, group: 'else' });
-      } else {
-        this.emit('if' + (br.cond ? ' ' + br.cond : ''), { indent: this.indent, group: 'cond' });
+      if (br.comment && br.stmt === undefined) { this.commentBlock(br.comment); continue; }
+      if (br.condComments) {
+        for (const c of br.condComments) this.emit(c, { indent: this.indent, group: 'comment' });
       }
-      this.hangBlock = true;
+      let head;
+      if (br.elseIf) {
+        head = 'else if' + (br.cond ? ' ' + br.cond : '');
+      } else if (br.else) {
+        head = 'else';
+      } else {
+        head = 'if' + (br.cond ? ' ' + br.cond : '');
+      }
+      if (br.comment) head += ' ' + br.comment.text.trim();
+      this.emit(head, { indent: this.indent, group: br.else ? 'else' : 'cond' });
+      this.hangBlock = !br.comment;
       this.emitBody(br.stmt);
       this.hangBlock = false;
     }
@@ -599,7 +787,7 @@ class Formatter {
 
   caseStatement(node) {
     const kids = namedChildren(node);
-    const items = kids.filter((k) => k.type === 'case_item' || k.type === 'default_case_item');
+    const items = kids.filter((k) => k.type === 'case_item' || k.type === 'default_case_item' || isCommentNode(k));
 
     // Header = everything before the first case item, collapsed.
     const firstItem = items[0];
@@ -609,7 +797,10 @@ class Formatter {
 
     this.emit(head || 'case', { indent: this.indent, group: 'case-head' });
     this.indent++;
-    for (const it of items) this.caseItem(it);
+    for (const it of items) {
+      if (isCommentNode(it)) { this.commentBlock(it); continue; }
+      this.caseItem(it);
+    }
     this.indent--;
     this.emit('endcase', { indent: this.indent, group: 'end' });
   }
@@ -699,9 +890,10 @@ class Formatter {
    * are reproduced as well, so macro regions keep their spacing.
    */
   verbatim(node) {
-    for (const ln of node.text.split(/\r\n|\r|\n/)) {
-      this.push(ln.replace(/\s+$/, ''), this.indent, 'raw', null);
-    }
+    const lines = node.text.split(/\r\n|\r|\n/);
+    lines.forEach((ln, i) => {
+      this.push(ln.replace(/\s+$/, ''), i === 0 ? this.indent : 0, 'raw', null);
+    });
   }
 
   /**
@@ -722,6 +914,22 @@ class Formatter {
         this.push(text, 0, 'comment-raw', null);
       }
     });
+  }
+
+  /**
+   * Append a trailing comment to the last emitted line instead of creating
+   * a new line.  This keeps `reg x; // comment` on one line.
+   */
+  appendTrailingComment(node) {
+    const comment = node.text.trim();
+    if (this.lines.length > 0) {
+      const last = this.lines[this.lines.length - 1];
+      if (last.text && !last.joinPrev) {
+        last.text = last.text + ' ' + comment;
+        return;
+      }
+    }
+    this.emit(comment, { indent: this.indent, group: 'comment' });
   }
 
   // ------------------------------------------------------------- emitting
@@ -871,6 +1079,40 @@ function collapse(s) {
 }
 
 /**
+ * Split a header string into segments, preserving `//` line comments on their
+ * own lines.  Without this, collapse() would join everything into one line and
+ * a `//` comment would eat the rest of the header.
+ */
+function collapseHeadSegments(s) {
+  if (!s) return [''];
+  const segments = [];
+  let code = '';
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === '"') {
+      code += s[i++];
+      while (i < s.length && s[i] !== '"') {
+        if (s[i] === '\\' && i + 1 < s.length) { code += s[i++] + s[i++]; }
+        else code += s[i++];
+      }
+      if (i < s.length) code += s[i++];
+      continue;
+    }
+    if (s[i] === '/' && s[i + 1] === '/') {
+      if (code.trim()) segments.push(collapse(code));
+      code = '';
+      let comment = '';
+      while (i < s.length && s[i] !== '\n') comment += s[i++];
+      segments.push(comment.trim());
+      continue;
+    }
+    code += s[i++];
+  }
+  if (code.trim()) segments.push(collapse(code));
+  return segments.length ? segments : [''];
+}
+
+/**
  * Number of blank lines between two nodes.
  *
  * The gap between two nodes starts right after the previous node's last
@@ -946,21 +1188,49 @@ function firstChildOfType(node, types) {
  */
 function portDeclarations(portList, src) {
   const found = [];
+  const bindComment = (c) => {
+    if (found.length > 0 && !found[found.length - 1].isComment && !found[found.length - 1].comment) {
+      found[found.length - 1].comment = c.text.trim();
+    } else {
+      found.push({ startIndex: c.startIndex, endIndex: c.endIndex, text: '', comment: c.text.trim(), isComment: true });
+    }
+  };
   const walk = (n, depth) => {
     if (depth > 4) return;
     for (let i = 0; i < n.namedChildCount; i++) {
       const c = n.namedChild(i);
-      if (c.type === 'ansi_port_declaration' || c.type === 'port_declaration') {
-        found.push({ startIndex: c.startIndex, endIndex: c.endIndex, text: c.text });
+      if (c.type === 'ansi_port_declaration' || c.type === 'port_declaration' || c.type === 'port') {
+        found.push({ startIndex: c.startIndex, endIndex: c.endIndex, text: c.text, comment: '' });
         continue;
       }
+      if (c.type === 'conditional_compilation_directive' || c.type === 'ERROR') {
+        found.push({ startIndex: c.startIndex, endIndex: c.endIndex, text: c.text, comment: '', isRaw: true });
+        continue;
+      }
+      // Bind trailing comment to the preceding port, or emit as a standalone line
+      // (group comment / second comment on the same port).
+      if (isCommentNode(c) && depth === 0) { bindComment(c); continue; }
       if (c.namedChildCount > 0) walk(c, depth + 1);
     }
   };
   walk(portList, 0);
   if (found.length) return found.sort((a, b) => a.startIndex - b.startIndex);
 
-  // Fallback: split the raw text at top-level commas.
+  // Non-ANSI list_of_ports: bare `port` nodes (`clk`, `rst`, ...) with optional
+  // trailing one_line_comment / block_comment siblings. Bind each comment to the
+  // preceding port so it stays on the same line instead of merging into the next.
+  const ports = [];
+  for (let i = 0; i < portList.namedChildCount; i++) {
+    const c = portList.namedChild(i);
+    if (c.type === 'port') {
+      ports.push({ startIndex: c.startIndex, endIndex: c.endIndex, text: c.text, comment: '' });
+    } else if (isCommentNode(c) && ports.length > 0) {
+      ports[ports.length - 1].comment = c.text.trim();
+    }
+  }
+  if (ports.length) return ports.sort((a, b) => a.startIndex - b.startIndex);
+
+  // Fallback: split the raw text at top-level commas (comment-aware).
   const text = src.slice(portList.startIndex, portList.endIndex)
     .replace(/^\s*\(/, '').replace(/\)\s*$/, '');
   return splitTopLevel(text, ',')
@@ -1064,14 +1334,24 @@ function collectConditional(kids) {
 
   for (const k of kids) {
     if (k.type === 'cond_predicate') {
-      const inner = namedChildren(k)[0];
+      const pt = predicateText(k);
       out.push({
         elseIf: seenPred > 0,
         else: false,
-        cond: predicateText(k),
+        cond: pt.text,
+        condComments: pt.comments,
         stmt: null,
       });
       seenPred++;
+      continue;
+    }
+    // Preserve comments between branches so they are not silently dropped.
+    if (isCommentNode(k)) {
+      if (out.length && out[out.length - 1].stmt === null && !out[out.length - 1].comment) {
+        out[out.length - 1].comment = k;
+      } else {
+        out.push({ comment: k });
+      }
       continue;
     }
     if (k.type !== 'statement' && k.type !== 'statement_or_null') continue;
@@ -1096,11 +1376,38 @@ function isElseIfChain(stmtNode) {
 
 function predicateText(pred) {
   const inner = namedChildren(pred)[0];
-  if (!inner) {
-    const t = collapse(pred.text).replace(/^\(/, '').replace(/\)$/, '');
-    return '(' + t + ')';
+  if (inner) {
+    const { text, comments } = stripLineComments(inner.text);
+    return { text: '(' + collapse(text) + ')', comments };
   }
-  return '(' + collapse(inner.text) + ')';
+  const { text, comments } = stripLineComments(pred.text);
+  const t = collapse(text).replace(/^\(/, '').replace(/\)$/, '');
+  return { text: '(' + t + ')', comments };
+}
+
+function stripLineComments(s) {
+  const comments = [];
+  let out = '';
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === '"') {
+      out += s[i++];
+      while (i < s.length && s[i] !== '"') {
+        if (s[i] === '\\' && i + 1 < s.length) { out += s[i++] + s[i++]; }
+        else out += s[i++];
+      }
+      if (i < s.length) out += s[i++];
+      continue;
+    }
+    if (s[i] === '/' && s[i + 1] === '/') {
+      let comment = '';
+      while (i < s.length && s[i] !== '\n') comment += s[i++];
+      comments.push(comment.trim());
+      continue;
+    }
+    out += s[i++];
+  }
+  return { text: out, comments };
 }
 
 function splitTopLevel(s, sep) {
@@ -1112,6 +1419,27 @@ function splitTopLevel(s, sep) {
       cur += c;
       if (c === '\\') { cur += s[i + 1] || ''; i++; continue; }
       if (c === '"') inStr = false;
+      continue;
+    }
+    // Line comment: attach to the preceding segment so it does not leak into
+    // the next comma-separated entry.
+    if (c === '/' && s[i + 1] === '/') {
+      let j = i;
+      while (j < s.length && s[j] !== '\n') j++;
+      const comment = s.slice(i, j);
+      if (cur.trim() === '' && res.length > 0) res[res.length - 1] += comment;
+      else cur += comment;
+      i = j - 1;
+      continue;
+    }
+    // Block comment: same binding rule.
+    if (c === '/' && s[i + 1] === '*') {
+      let j = i + 2;
+      while (j < s.length && !(s[j] === '*' && s[j + 1] === '/')) j++;
+      const comment = s.slice(i, j + 2);
+      if (cur.trim() === '' && res.length > 0) res[res.length - 1] += comment;
+      else cur += comment;
+      i = j + 1;
       continue;
     }
     if (c === '"') { inStr = true; cur += c; continue; }
@@ -1250,6 +1578,15 @@ class AlignPass {
    * does not compose.
    */
   alignDeclGroup(group) {
+    for (const ln of group) {
+      const text = ln.text;
+      const cmt = text.indexOf('//');
+      if (cmt >= 0) {
+        ln.text = text.slice(0, cmt).replace(/[ \t]{2,}/g, ' ') + text.slice(cmt);
+      } else {
+        ln.text = text.replace(/[ \t]{2,}/g, ' ');
+      }
+    }
     const parsed = group.map((l) => declarationColumns(l.text));
     if (parsed.some((p) => p === null)) return;
 
@@ -1276,9 +1613,11 @@ class AlignPass {
       // way to the name column instead.
       const b = [];
       if (hasDir && c.dirEnd > 0) b.push([c.dirEnd, colDir]);
-      b.push(hasDim && c.dimEnd === 0
-        ? [c.typeEnd, colName - 1]
-        : [c.typeEnd, colType]);
+      if (c.typeEnd > 0 && c.typeEnd !== c.nameStart) {
+        b.push(hasDim && c.dimEnd === 0
+          ? [c.typeEnd, colName - 1]
+          : [c.typeEnd, colType]);
+      }
       if (hasDim && c.dimEnd > 0) b.push([c.dimEnd, colDim]);
       b.push([c.nameStart, colName]);
       if (colEnd) b.push([c.nameEnd, colEnd]);
@@ -1605,7 +1944,16 @@ function portConnections(inst) {
       const c = n.namedChild(i);
       if (c.type === 'port_connection' || c.type === 'named_port_connection' ||
           c.type === 'ordered_port_connection' || c.type === 'wildcard_port_connection') {
-        found.push({ startIndex: c.startIndex, endIndex: c.endIndex, text: c.text });
+        found.push({ startIndex: c.startIndex, endIndex: c.endIndex, text: c.text, comment: '' });
+        continue;
+      }
+      if (c.type === 'conditional_compilation_directive' || c.type === 'ERROR') {
+        found.push({ startIndex: c.startIndex, endIndex: c.endIndex, text: c.text, comment: '', isRaw: true });
+        continue;
+      }
+      // Keep comments that sit between port connections (e.g. `// Outputs`).
+      if (isCommentNode(c)) {
+        found.push({ startIndex: c.startIndex, endIndex: c.endIndex, text: '', comment: c.text.trim() });
         continue;
       }
       if (c.namedChildCount > 0) walk(c, depth + 1);
@@ -1674,15 +2022,35 @@ function declarationColumns(text) {
     if (DIRECTIONS.includes(w) && out.dirEnd === 0) {
       out.dir = w;
       words.push(w);
+      ws();
       out.dirEnd = i;
+      // Consume packed dimensions with implicit type (e.g. `input [31:0] din`).
+      if (i < t.length && t[i] === '[') {
+        out.dimStart = i;
+        let dimEnd = 0;
+        while (i < t.length && t[i] === '[') {
+          let depth = 0;
+          while (i < t.length) {
+            const c = t[i];
+            if (c === '[') { depth++; i++; }
+            else if (c === ']') { depth--; i++; if (depth === 0) break; }
+            else { i++; }
+            if (depth > 64) break;
+          }
+          if (depth !== 0) return null;
+          dimEnd = i;
+          ws();
+        }
+        out.dimEnd = dimEnd;
+      }
       continue;
     }
     if (QUALIFIERS.includes(w) || TYPE_KEYWORDS.has(w) || w === 'signed' || w === 'unsigned') {
       words.push(w);
       out.type = w;
+      ws();
       out.typeEnd = i;
       // Consume packed dimensions that follow the base type.
-      ws();
       out.dimStart = i;
       let dimEnd = 0;
       while (i < t.length && t[i] === '[') {
@@ -1703,8 +2071,8 @@ function declarationColumns(text) {
           if (depth > 64) break;
         }
         if (depth !== 0) return null;
-        ws();
         dimEnd = i;
+        ws();
       }
       out.dimEnd = dimEnd;
       continue;
@@ -1713,6 +2081,8 @@ function declarationColumns(text) {
     // First word that is neither qualifier nor type: this is the signal name.
     out.name = w;
     out.nameStart = before;
+    out.nameEnd = i;
+    ws();
     out.nameEnd = i;
     return out;
   }
@@ -1737,34 +2107,47 @@ const TYPE_KEYWORDS = new Set([
  */
 function parameterDeclarations(paramList, src) {
   const found = [];
+  const bindComment = (c) => {
+    if (found.length > 0 && !found[found.length - 1].isComment && !found[found.length - 1].comment) {
+      found[found.length - 1].comment = c.text.trim();
+    } else {
+      found.push({ startIndex: c.startIndex, endIndex: c.endIndex, text: '', comment: c.text.trim(), isComment: true });
+    }
+  };
   const walk = (n, depth) => {
     if (depth > 4) return;
     for (let i = 0; i < n.namedChildCount; i++) {
       const c = n.namedChild(i);
       if (/^(?:parameter|localparam)_declaration$/.test(c.type) ||
           c.type === 'parameter_declaration' || c.type === 'localparam_declaration') {
-        found.push({ startIndex: c.startIndex, endIndex: c.endIndex });
+        found.push({ startIndex: c.startIndex, endIndex: c.endIndex, text: '', comment: '' });
         continue;
       }
+      if (isCommentNode(c) && depth === 0) { bindComment(c); continue; }
       if (c.namedChildCount > 0) walk(c, depth + 1);
     }
   };
   walk(paramList, 0);
 
-  let items;
   if (found.length) {
-    items = found
-      .sort((a, b) => a.startIndex - b.startIndex)
-      .map((n) => collapse(src.slice(n.startIndex, n.endIndex)));
-  } else {
-    // Fallback: split the raw text at top-level commas.
-    const text = src.slice(paramList.startIndex, paramList.endIndex)
-      .replace(/^\s*#?\s*\(/, '')
-      .replace(/\)\s*$/, '');
-    items = splitTopLevel(text, ',').map((s) => collapse(s)).filter(Boolean);
+    found.sort((a, b) => a.startIndex - b.startIndex);
+    const real = found.filter((f) => !f.isComment);
+    for (const f of found) {
+      if (f.isComment) continue;
+      const idx = real.indexOf(f);
+      f.text = collapse(src.slice(f.startIndex, f.endIndex)) +
+        (idx === real.length - 1 ? '' : ',') +
+        (f.comment ? ' ' + f.comment : '');
+    }
+    return found;
   }
 
-  return items.map((text, i) => text + (i === items.length - 1 ? '' : ','));
+  // Fallback: split the raw text at top-level commas.
+  const text = src.slice(paramList.startIndex, paramList.endIndex)
+    .replace(/^\s*#?\s*\(/, '')
+    .replace(/\)\s*$/, '');
+  const items = splitTopLevel(text, ',').map((s) => collapse(s)).filter(Boolean);
+  return items.map((t, i) => ({ text: t + (i === items.length - 1 ? '' : ','), comment: '' }));
 }
 
 /** First statement-like descendant of a declaration node, in source order. */

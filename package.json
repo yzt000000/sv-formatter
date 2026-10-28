@@ -2,7 +2,7 @@
   "name": "sv-formatter",
   "displayName": "SystemVerilog Formatter",
   "description": "Structure-driven SystemVerilog formatter: indentation derived from the parse tree, column alignment, macro-safe, and idempotent.",
-  "version": "0.2.1",
+  "version": "0.2.4",
   "publisher": "yzt000000",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -176,5 +176,9 @@
   "dependencies": {
     "tree-sitter": "^0.25.1",
     "tree-sitter-systemverilog": "^0.4.1"
+  },
+  "allowScripts": {
+    "tree-sitter@0.25.1": true,
+    "tree-sitter-systemverilog@0.4.1": true
   }
 }

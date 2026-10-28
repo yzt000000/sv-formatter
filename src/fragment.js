@@ -96,6 +96,27 @@ function findSmallestBlock(node, s, e) {
   return null;
 }
 
+/** Find the AST node whose span is exactly [start, end]. */
+function findNodeAt(node, start, end) {
+  if (node.startIndex === start && node.endIndex === end) return node;
+  for (const child of node.namedChildren) {
+    if (child.startIndex <= start && child.endIndex >= end) {
+      const found = findNodeAt(child, start, end);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+/** Whether a node or any descendant is an ERROR or MISSING node. */
+function nodeHasError(node) {
+  if (node.type === 'ERROR' || node.type === 'MISSING') return true;
+  for (let i = 0; i < node.namedChildCount; i++) {
+    if (nodeHasError(node.namedChild(i))) return true;
+  }
+  return false;
+}
+
 /**
  * Grow the selection range to the smallest block-level syntax node containing
  * it. `source` is the full document text; `start`/`end` are byte offsets of the
@@ -118,7 +139,19 @@ function expandToBlock(source, start, end) {
   } catch (_) {
     return null;
   }
-  if (root.hasError) return null;
+  if (root.hasError) {
+    // Even with parse errors (e.g. `ifdef in port lists), tree-sitter still
+    // produces valid sub-trees for many nodes.  Try findSmallestBlock; if it
+    // finds a block that does not itself contain an ERROR, use it.
+    const block = findSmallestBlock(root, s, e);
+    if (block) {
+      // Reject blocks that contain ERROR nodes — formatting them could lose
+      // content.  Check the source range for ERROR sub-nodes.
+      const blockNode = findNodeAt(root, block.start, block.end);
+      if (blockNode && !nodeHasError(blockNode)) return block;
+    }
+    return null;
+  }
   return findSmallestBlock(root, s, e);
 }
 
