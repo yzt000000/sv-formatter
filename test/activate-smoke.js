@@ -95,10 +95,16 @@ assert.strictEqual(registered.formatting, 1, 'expected one document formatting p
 assert.strictEqual(registered.rangeFormatting, 1, 'expected one range formatting provider');
 assert.deepStrictEqual(
   registered.commands.sort(),
-  ['svFormatter.formatDocument', 'svFormatter.formatSelectionOnly'],
-  'expected both commands to be registered'
+  [
+    'svFormatter.formatDocument',
+    'svFormatter.formatSelectionCompact',
+    'svFormatter.formatSelectionExplode',
+    'svFormatter.formatSelectionOnly',
+    'svFormatter.formatSelectionWithLayout',
+  ],
+  'expected all commands to be registered'
 );
-assert.strictEqual(context.subscriptions.length, 4, 'expected 4 disposables in subscriptions');
+assert.strictEqual(context.subscriptions.length, 7, 'expected 7 disposables in subscriptions');
 
 ext.deactivate();
 

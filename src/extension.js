@@ -103,14 +103,113 @@ function selectionEdit(document, range, config) {
   const fragText = source.slice(fmtStart, fmtEnd);
   if (!fragText.trim()) return null;
 
-  const { text, hadError } = formatFragment(fragText, config);
+  const { text, hadError, wrapped } = formatFragment(
+    fragText, config, block ? block.type : null
+  );
   if (hadError && !config.formatOnParseError) return { skipped: true };
 
   return {
     range: new vscode.Range(document.positionAt(fmtStart), document.positionAt(fmtEnd)),
     text,
     block,
+    wrapped,
   };
+}
+
+/**
+ * Apply one selection format with an optional `instanceLayout` override.
+ *
+ * `Ctrl+Alt+K` and the range-formatting provider keep using the settings as
+ * written; the layout-aware commands pass an override so the user can pick
+ * `explode` or `compact` for one invocation without touching settings.json.
+ *
+ * Overriding `instanceLayout` also forces `explodeInstancePorts` back on: that
+ * older boolean predates `instanceLayout` and resolveConfig() lets it win, so
+ * leaving it at `false` would silently turn every explicit choice into `off`.
+ */
+async function runSelectionFormat(layoutOverride) {
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) return;
+  const { document, selection } = editor;
+
+  if (selection.isEmpty) {
+    vscode.window.showInformationMessage(
+      'SV Formatter: 请先选中一段代码，再执行 Format Selection。'
+    );
+    return;
+  }
+  if (document.languageId !== 'systemverilog' && document.languageId !== 'verilog') {
+    vscode.window.showWarningMessage(
+      'SV Formatter: 当前文件不是 SystemVerilog / Verilog。'
+    );
+    return;
+  }
+
+  const config = readConfig();
+  if (layoutOverride) {
+    config.instanceLayout = layoutOverride;
+    config.explodeInstancePorts = true;
+  }
+
+  const trace = vscode.workspace.getConfiguration(CONFIG_SECTION).get('trace.server', 'off');
+  const result = selectionEdit(document, selection, config);
+  if (!result) return;
+  if (result.skipped) {
+    vscode.window.showWarningMessage(
+      'SV Formatter: 选区有语法错误，已跳过 ' +
+      '(enable systemverilogFormatter.formatOnParseError to override).'
+    );
+    return;
+  }
+  if (trace === 'messages') {
+    console.log(`[sv-formatter] selection ${document.fileName}: ` +
+      `block=${result.block ? result.block.type : 'line-range'} ` +
+      `wrapped=${result.wrapped}`);
+  }
+
+  const edit = new vscode.WorkspaceEdit();
+  edit.set(document.uri, [vscode.TextEdit.replace(result.range, result.text)]);
+  await vscode.workspace.applyEdit(edit);
+}
+
+/**
+ * Quick Pick entries for the layout-aware selection format.
+ *
+ * The last choice is floated to the top and pre-selected, so repeating the
+ * same operation is Enter-Enter rather than a hunt through the list.
+ */
+function layoutQuickPickItems(lastPicked, maxPorts) {
+  const items = [
+    {
+      label: '$(list-flat) Explode — 一端口一行',
+      description: 'explode',
+      detail: '端口逐行展开并做列对齐。端口多、要逐个确认连线时用。',
+      layout: 'explode',
+    },
+    {
+      label: '$(list-unordered) Compact — 单行成表',
+      description: 'compact',
+      detail: '整套例化压成一行；相邻同模块实例的 .port(expr) 对齐成表。',
+      layout: 'compact',
+    },
+    {
+      label: '$(settings-gear) Auto — 按端口数自动',
+      description: 'auto',
+      detail: `连接数 ≤ ${maxPorts} 用 compact，超过用 explode。`,
+      layout: 'auto',
+    },
+    {
+      label: '$(check) 按当前配置',
+      description: 'config',
+      detail: '沿用 systemverilogFormatter.instanceLayout，不覆盖。',
+      layout: null,
+    },
+  ];
+  if (!lastPicked) return items;
+  const idx = items.findIndex((it) => it.layout === lastPicked);
+  if (idx <= 0) return items;
+  const [hit] = items.splice(idx, 1);
+  return [hit, ...items];
 }
 
 /**
@@ -166,44 +265,43 @@ function activate(context) {
       await vscode.workspace.applyEdit(edit);
     }),
     vscode.commands.registerCommand('svFormatter.formatSelectionOnly', async () => {
+      await runSelectionFormat(null);
+    }),
+    // Pick the instance layout for this one invocation, then format the
+    // selection. Remembers the previous choice so a repeated operation is
+    // Enter-Enter.
+    vscode.commands.registerCommand('svFormatter.formatSelectionWithLayout', async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
-      const { document, selection } = editor;
-
-      if (selection.isEmpty) {
+      if (editor.selection.isEmpty) {
         vscode.window.showInformationMessage(
-          'SV Formatter: 请先选中一段代码，再执行 Format Selection Only。'
-        );
-        return;
-      }
-      const lang = document.languageId;
-      if (lang !== 'systemverilog' && lang !== 'verilog') {
-        vscode.window.showWarningMessage(
-          'SV Formatter: 当前文件不是 SystemVerilog / Verilog。'
+          'SV Formatter: 请先选中一段代码，再执行 Format Selection with Layout。'
         );
         return;
       }
 
-      const config = readConfig();
-      const trace = vscode.workspace.getConfiguration(CONFIG_SECTION).get('trace.server', 'off');
+      const cfg = readConfig();
+      const last = context.workspaceState.get('svFormatter.lastSelectionLayout', null);
+      const items = layoutQuickPickItems(last, cfg.compactInstanceMaxPorts);
+      const picked = await vscode.window.showQuickPick(items, {
+        title: 'SV Formatter — Format Selection',
+        placeHolder: '选择本次例化的布局方式（Esc 取消）',
+        matchOnDescription: true,
+      });
+      if (!picked) return;
 
-      const result = selectionEdit(document, selection, config);
-      if (!result) return;
-      if (result.skipped) {
-        vscode.window.showWarningMessage(
-          'SV Formatter: 选区有语法错误，已跳过 ' +
-          '(enable systemverilogFormatter.formatOnParseError to override).'
-        );
-        return;
+      if (picked.layout) {
+        await context.workspaceState.update('svFormatter.lastSelectionLayout', picked.layout);
       }
-      if (trace === 'messages') {
-        console.log(`[sv-formatter] selection ${document.fileName}: ` +
-          `block=${result.block ? result.block.type : 'line-range'}`);
-      }
-
-      const edit = new vscode.WorkspaceEdit();
-      edit.set(document.uri, [vscode.TextEdit.replace(result.range, result.text)]);
-      await vscode.workspace.applyEdit(edit);
+      await runSelectionFormat(picked.layout);
+    }),
+    // Direct commands, no default keybinding: bind them yourself if you format
+    // with one layout far more often than the other.
+    vscode.commands.registerCommand('svFormatter.formatSelectionExplode', async () => {
+      await runSelectionFormat('explode');
+    }),
+    vscode.commands.registerCommand('svFormatter.formatSelectionCompact', async () => {
+      await runSelectionFormat('compact');
     })
   );
 }

@@ -1134,6 +1134,74 @@ console.log('\n=== fragment formatting tests ===');
     spliced.endsWith('  assign z = x;\nendmodule'), spliced);
 }
 
+// 17. Selection formatting inside a module body wraps the slice in a throwaway
+//     module. A bare `tiny u_a (.clk(clk));` sliced out of its module parses on
+//     its own as a `statement` (a task/function call), so the instantiation
+//     emitter never runs and instanceLayout is silently ignored. With the
+//     wrapper the slice parses as `module_instantiation` and both layouts work.
+{
+  const { expandToBlock, formatFragment } = require('../src/fragment');
+  const { resolveConfig } = require('../src/config');
+
+  const src = [
+    'module t;',
+    '    tiny u_a (',
+    '        .clk(clk),',
+    '        .d(q0)',
+    '    );',
+    'endmodule',
+    '',
+  ].join('\n');
+
+  const sliceFor = (needle, overrides) => {
+    const cfg = resolveConfig(overrides);
+    const s = src.indexOf(needle);
+    const block = expandToBlock(src, s, s + needle.length);
+    const lineStart = src.lastIndexOf('\n', block.start) + 1;
+    const lineEnd = src.indexOf('\n', block.end) + 1;
+    return { block, ...formatFragment(src.slice(lineStart, lineEnd), cfg, block.type) };
+  };
+
+  const exploded = sliceFor('tiny u_a', { instanceLayout: 'explode' });
+  check('selection/wrap: bare instance block is module_instantiation',
+    exploded.block.type === 'module_instantiation', exploded.block.type);
+  check('selection/wrap: bare instance explodes',
+    exploded.text.replace(/\n+$/, '') ===
+      '    tiny u_a (\n        .clk(clk),\n        .d  (q0 )\n    );',
+    JSON.stringify(exploded.text));
+  check('selection/wrap: wrapper removed from output',
+    !/__svfmt_wrap__|endmodule/.test(exploded.text), exploded.text);
+  check('selection/wrap: wrapped flag set', exploded.wrapped === true,
+    String(exploded.wrapped));
+
+  const compacted = sliceFor('tiny u_a', { instanceLayout: 'compact' });
+  check('selection/wrap: bare instance compacts to one line',
+    compacted.text.replace(/\n+$/, '') === '    tiny u_a (.clk(clk), .d(q0));',
+    JSON.stringify(compacted.text));
+
+  // Idempotence of the wrapped path: feeding the result back must not move.
+  const again = formatFragment(exploded.text, resolveConfig({ instanceLayout: 'explode' }),
+    'module_instantiation');
+  check('selection/wrap: idempotent', again.text === exploded.text,
+    JSON.stringify(again.text) + '\n' + JSON.stringify(exploded.text));
+
+  // A top-level module declaration must never be wrapped: nesting it inside
+  // another module is illegal and the whole thing collapses to one line.
+  const whole = formatFragment('module m;\ntiny u (.clk(clk));\nendmodule\n',
+    resolveConfig({ instanceLayout: 'explode' }), 'module_declaration');
+  check('selection/wrap: module declaration not wrapped', whole.wrapped === false,
+    String(whole.wrapped));
+  check('selection/wrap: module body still formatted',
+    /tiny u \(\n {8}\.clk\(clk\)\n {4}\);/.test(whole.text), whole.text);
+
+  // Macros stay verbatim: wrapping would re-indent `\` continuation lines.
+  const mac = formatFragment('`define FOO(x) \\\n    a(x); \\\n    b(x)\n',
+    resolveConfig({}), 'text_macro_definition');
+  check('selection/wrap: macro not wrapped', mac.wrapped === false, String(mac.wrapped));
+  check('selection/wrap: macro continuation indent preserved',
+    mac.text.includes('\n    a(x); \\\n'), mac.text);
+}
+
 // ---------------------------------------------------------------- summary
 console.log('\n=== summary ===');
 console.log(`passed: ${passed}`);

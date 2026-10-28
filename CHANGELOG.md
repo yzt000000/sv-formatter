@@ -5,6 +5,42 @@ All notable changes to this extension are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-10-29
+
+### Added
+
+- **选区格式化时选择例化布局。** `Ctrl+Alt+L`
+  (`svFormatter.formatSelectionWithLayout`) 先弹出 explode / compact / auto /
+  按当前配置 四选一，再格式化选区，不改动 `settings.json`。上次的选择会浮到列表
+  首位并预选。另提供 `svFormatter.formatSelectionExplode` 与
+  `svFormatter.formatSelectionCompact` 两个直通命令（不绑默认键位，便于自行绑键）。
+
+### Changed
+
+- **全部 19 个配置项补上中文说明。** `package.json` 的 `contributes.configuration`
+  为每个属性增加中文 `markdownDescription`（写清取值含义、单位、与其它项的联动关系），
+  `instanceLayout` 的 `enumDescriptions` 也改为中文。英文 `description` 保留不变，
+  继续供 schema 消费者与设置界面搜索使用；VSCode 优先渲染 `markdownDescription`，
+  因此设置面板与 `settings.json` 的悬浮提示现在都是中文。
+- README 新增整节 **「`Ctrl+Alt+L`：选中一段，现场决定例化用哪种形态」**：
+  三步操作、同一段代码在 Explode / Compact / Auto 下的真实输出对照、compact 跨实例成表的效果、
+  行为约定（只对本次生效、记住上次选择、无选区不触发、与 `Ctrl+Alt+K` 的关系、
+  两个直通命令的绑键写法）以及三种不适用场景。
+- README 配置表补全 `trace.server`，各项说明与 `package.json` 中文描述对齐；
+  「关闭展开」示例改用 `instanceLayout: "off"`（`explodeInstancePorts` 已废弃）。
+
+### Fixed
+
+- **选区格式化的例化布局对「无参数覆盖」的实例完全不生效。** 一条裸的
+  `tiny u_a (.clk(clk), .d(q0));` 被切片后会脱离 module 上下文，语法分析把它判为
+  `statement`（task/function call），实例化发射器根本不会被调用：无论
+  `instanceLayout` 设成 explode 还是 compact，输出都只是把原有排版压成一行。
+  现在把这类块临时包进一个一次性 `module` 再解析，包裹层在输出前剥掉并扣回它引入的
+  一级缩进。顶层 `module`/`interface`/`package` 声明与宏定义不在包裹范围内（前者嵌套
+  非法、后者续行缩进会被破坏）。受影响的还有 `always_construct`、声明与 `generate`
+  片段——它们此前同样依赖「裸切片恰好能解析成正确节点类型」这一巧合。
+- 幂等性保持：同一片段连续格式化结果不变（explode / compact / auto 均验证）。
+
 ## [0.6.0] - 2026-10-28
 
 ### Added

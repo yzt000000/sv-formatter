@@ -180,24 +180,111 @@ function inferBaseIndent(text, config) {
 }
 
 /**
+ * Block types that are only legal *inside* a module body.
+ *
+ * A bare `tiny u_a (.clk(clk));` sliced out of a module and parsed on its own
+ * is ambiguous — tree-sitter reads `ident ident (...)` as a `statement` (a task
+ * or function call), so the slice never reaches the instantiation emitter and
+ * the port map keeps whatever layout the author wrote (or gets collapsed to one
+ * line by the `default` branch). The same happens to `always_construct` bodies
+ * and to declarations. Wrapping these slices in a throwaway module makes the
+ * parse context correct so the real emitters run.
+ *
+ * Deliberately excluded:
+ *   - module/interface/package/... declarations: nesting one inside a wrapper
+ *     is not legal SystemVerilog, the parse breaks and the whole thing
+ *     collapses to a single line;
+ *   - class declarations: already a legal top-level construct, formats fine
+ *     unwrapped;
+ *   - macros and compiler directives: emitted verbatim, and a wrapped
+ *     multi-line `define would have its continuation lines re-indented, which
+ *     changes their meaning.
+ */
+const WRAP_IN_MODULE = new Set([
+  'data_declaration', 'net_declaration', 'parameter_declaration',
+  'local_parameter_declaration', 'specparam_declaration',
+  'continuous_assign',
+  'always_construct', 'initial_construct', 'final_construct',
+  'generate_region', 'generate_construct', 'loop_generate_construct',
+  'conditional_generate_construct', 'if_generate_construct', 'generate_block',
+  'module_instantiation', 'udp_instantiation',
+  'function_declaration', 'task_declaration',
+  'property_declaration', 'sequence_declaration', 'covergroup_declaration',
+  'modport_declaration', 'clocking_declaration', 'constraint_declaration',
+  'checker_declaration', 'genvar_declaration',
+  'module_item', 'module_or_generate_item', 'block_item_declaration',
+  'interface_declaration_body',
+]);
+
+const WRAP_HEAD = 'module __svfmt_wrap__;\n';
+const WRAP_TAIL = '\nendmodule\n';
+
+/**
+ * Remove the wrapper module and the one extra indentation level it introduced.
+ *
+ * Only a leading indent unit is stripped, never a partial one: a `define
+ * continuation line that the engine left verbatim must not be touched, and it
+ * is excluded from WRAP_IN_MODULE anyway.
+ */
+function stripWrapper(text, cfg) {
+  const lines = text.split('\n');
+  let start = lines.length && /^\s*module\s+__svfmt_wrap__\s*;\s*$/.test(lines[0]) ? 1 : 0;
+  let end = lines.length;
+  while (end > start && lines[end - 1].trim() === '') end--;
+  if (end > start && /^\s*endmodule\s*$/.test(lines[end - 1])) end--;
+
+  const unit = cfg.useTabs ? '\t' : ' '.repeat(cfg.indentSize);
+  const body = lines.slice(start, end);
+  if (!unit) return body.join('\n');
+  return body
+    .map((line) => (line.startsWith(unit) ? line.slice(unit.length) : line))
+    .join('\n');
+}
+
+/**
  * Format a standalone fragment without touching anything outside it.
  *
- * Returns { text, hadError, basePrefix } where `text` is the formatted fragment
- * already re-indented by `basePrefix` and terminated by a single trailing
- * newline (matching the line span the caller extracted). The caller splices
- * `text` into the document over the expanded line range.
+ * `blockType` is the syntax node type the caller grew the selection to (as
+ * returned by `expandToBlock`). Pass it whenever it is known: it decides
+ * whether the slice needs a temporary module wrapper to parse in the right
+ * context (see WRAP_IN_MODULE). Omitting it keeps the old behaviour of
+ * formatting the slice exactly as given.
+ *
+ * Returns { text, hadError, basePrefix, wrapped } where `text` is the formatted
+ * fragment already re-indented by `basePrefix` and terminated by a single
+ * trailing newline (matching the line span the caller extracted). The caller
+ * splices `text` into the document over the expanded line range.
  */
-function formatFragment(text, config) {
+function formatFragment(text, config, blockType) {
   const cfg = resolveConfig(config);
   const basePrefix = inferBaseIndent(text, cfg);
-  const result = format(text, cfg);
+  const wantsWrap = Boolean(blockType) && WRAP_IN_MODULE.has(blockType);
+
+  let result;
+  let wrapped = false;
+  if (wantsWrap) {
+    const prepared = WRAP_HEAD + text.replace(/\s+$/, '') + WRAP_TAIL;
+    result = format(prepared, cfg);
+    // A wrapper that fails to parse is worse than no wrapper at all: fall back
+    // to formatting the slice bare, i.e. exactly what this function used to do.
+    if (result.hadError && !cfg.formatOnParseError) {
+      const bare = format(text, cfg);
+      if (!bare.hadError) result = bare;
+      else result = { text: stripWrapper(result.text, cfg), hadError: true };
+    } else {
+      wrapped = true;
+      result = { text: stripWrapper(result.text, cfg), hadError: result.hadError };
+    }
+  } else {
+    result = format(text, cfg);
+  }
 
   const outLines = result.text.split('\n');
   const indented = outLines
     .map((line) => (line.trim() === '' ? '' : basePrefix + line))
     .join('\n');
 
-  return { text: indented, hadError: result.hadError, basePrefix };
+  return { text: indented, hadError: result.hadError, basePrefix, wrapped };
 }
 
 module.exports = { expandToBlock, inferBaseIndent, formatFragment, BLOCK_TYPES };

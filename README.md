@@ -29,6 +29,7 @@
 | 语法错误保护 | 解析失败时默认**拒绝格式化**，可选覆盖 |
 | 幂等 | `format(format(x)) == format(x)`，有测试保证 |
 | **分段格式化** | 选中任意一段代码格式化，只重排选区、选区外逐字节不变，缩进按选区首行推断的基础层级 + 引擎结构推导 |
+| **现场切换例化布局** | `Ctrl+Alt+L` 选中一段后当场选 explode / compact / auto，只对本次生效，不改 `settings.json` |
 
 ## 样式示例
 
@@ -160,13 +161,101 @@ endmodule
   载荷重建，因此重复格式化不会累积空格（幂等）。
 - expr 列过宽时按 `alignTerminatorMaxPad` 放弃该列对齐，避免一个长表达式把整组推飞。
 
+> 上面选的是**文件级**默认形态。只想给**某一段选中**换形态、又不想改设置，
+> 用 `Ctrl+Alt+L`（见下一节）。
+
+## `Ctrl+Alt+L`：选中一段，现场决定例化用哪种形态
+
+`instanceLayout` 是**全局设置**——改它要开 `settings.json`，而且下一次保存会立刻影响整篇文件。
+但实际写 RTL 时，同一个文件里两种形态经常都要：
+
+- 成批按 bit 展开的 `sync_cell`、`crc_slice` → 压成表最好看，一眼扫完
+- 刚接的 `frame_store`、`axi_slave` 这类大端口模块 → 一端口一行，逐个 review 连线
+
+**`Ctrl+Alt+L` 就是把这个选择从「改配置」挪到「按下的那一刻」**：只对本次选区生效，
+不写 `settings.json`，不影响 `formatOnSave`，更不会波及文件里其它例化。
+
+### 三步操作
+
+| 步骤 | 做什么 |
+|---|---|
+| 1 | 选中要整理的代码。**不必精确**——选区会自动扩到包含它的最小完整语法块 |
+| 2 | 按 `Ctrl+Alt+L` |
+| 3 | 四选一 → 回车。列表里的 `按当前配置` 表示不覆盖，沿用 `instanceLayout` |
+
+### 同一段代码，三种结果
+
+输入（手写的拥挤排版）：
+
+```systemverilog
+    frame_store #(.DEPTH(512)) u_store (
+        .clk(clk), .rst_n(rst_n), .wr_en(store_wr_en),
+        .rd_en(store_rd_en), .wdata(store_wdata), .rdata(store_rdata)
+    );
+```
+
+选 **Explode** → 一端口一行，`(` 列对齐，适合逐个核对接线：
+
+```systemverilog
+    frame_store #(.DEPTH(512)) u_store (
+        .clk  (clk        ),
+        .rst_n(rst_n      ),
+        .wr_en(store_wr_en),
+        .rd_en(store_rd_en),
+        .wdata(store_wdata),
+        .rdata(store_rdata)
+    );
+```
+
+选 **Compact** → 整个实例回到一行（`compactInstanceMaxPorts` 不参与判定，compact 就是 compact）：
+
+```systemverilog
+    frame_store #(.DEPTH(512)) u_store (.clk(clk), .rst_n(rst_n), .wr_en(store_wr_en), .rd_en(store_rd_en), .wdata(store_wdata), .rdata(store_rdata));
+```
+
+选 **Auto** → 这里 6 个连接超过 `compactInstanceMaxPorts`（默认 4），落到 explode，结果与 Explode 相同。
+
+Compact 真正的价值在**成批实例**：同模块、相邻行的实例会连成一张表，`(` 与 `)` 跨行对齐。
+下面两行的例化名与表达式宽度都不同，仍然对齐：
+
+```systemverilog
+    tiny u_x  (.d(data_bus[7:0]), .q(q_x ));
+    tiny u_yy (.d(d            ), .q(q_yy));
+```
+
+### 行为约定
+
+- **只作用于本次调用**：覆盖值随命令结束丢弃，`settings.json` 一个字节不动。
+- **记住上次选择**：上次选过的项会浮到列表首位并预选，重复同一动作就是
+  `Ctrl+Alt+L` → `回车` → `回车`。
+- **没有选区时不会触发**：该键位的 `when` 条件含 `editorHasSelection`，无选区按下不产生任何编辑，
+  不会悄悄退化成全文格式化。
+- **`Ctrl+Alt+K` 等价于选「按当前配置」**：两者共用同一套块扩展与缩进推断逻辑，
+  区别只在于多不多这一步选择。
+- **想绕开弹窗**：`svFormatter.formatSelectionExplode` / `svFormatter.formatSelectionCompact`
+  两个直通命令默认不绑键位，自己绑死一个即可：
+
+  ```json
+  { "key": "ctrl+alt+e", "command": "svFormatter.formatSelectionExplode",
+    "when": "editorTextFocus && editorHasSelection && editorLangId == systemverilog" },
+  { "key": "ctrl+alt+c", "command": "svFormatter.formatSelectionCompact",
+    "when": "editorTextFocus && editorHasSelection && editorLangId == systemverilog" }
+  ```
+
+### 什么时候别用它
+
+- **要整篇统一形态**：改 `instanceLayout` 后按 `Ctrl+Alt+F`，别一段一段选。
+- **端口列表里含 `` `ifdef `` 的例化**：`expandToBlock` 会判为语法错误而跳过（已知限制，
+  见文末），改用整篇格式化。
+- **想连格式之外的语义一起动**（改端口名、重排实例顺序）：格式化器不做这些，它只重排空白。
+
 ## 安装
 
 ```bash
 # 打包并安装
 npm install
 npx @vscode/vsce package
-code --install-extension sv-formatter-0.6.0.vsix
+code --install-extension sv-formatter-0.6.1.vsix
 
 # 或者在 VSCode 里按 F5 启动扩展开发宿主调试
 ```
@@ -218,28 +307,31 @@ code --install-extension sv-formatter-0.6.0.vsix
 
 ## 配置项
 
-所有配置位于 `systemverilogFormatter.*`：
+所有配置位于 `systemverilogFormatter.*`。设置界面里每项都带**中文说明**
+（`markdownDescription`，含取值含义、单位、与其它项的联动），英文 `description` 保留在
+`package.json` 里供 schema 消费者与设置搜索使用。
 
 | 键 | 默认 | 说明 |
 |----|------|------|
-| `indentSize` | `4` | 每级缩进空格数 |
-| `useTabs` | `false` | 用 Tab 缩进 |
-| `explodePortList` | `true` | 模块端口列表一行一个 |
-| `explodeDeclarations` | `true` | 多信号声明一行一个，每行重复类型前缀 |
-| `explodeInstancePorts` | `true` | instance 端口连接一行一个 |
+| `indentSize` | `4` | 每级缩进的空格数（`useTabs` 为 `true` 时忽略） |
+| `useTabs` | `false` | 用 Tab 缩进，而不是空格 |
+| `explodePortList` | `true` | 模块端口列表一行一个端口 |
+| `explodeDeclarations` | `true` | 多信号声明一行一个，每行重复完整类型前缀（`wire a, b;` → 两行 `wire`） |
+| `explodeInstancePorts` | `true` | **已废弃**，改用 `instanceLayout: "off"`；为 `false` 时例化原文不动 |
+| `instanceLayout` | `explode` | 例化排版：`explode` 一端口一行 / `compact` 一实例一行并跨实例成表 / `auto` 按连接数自适应 / `off` 不动。含注释或 `` `ifdef `` 的连接列表强制 explode |
+| `compactInstanceMaxPorts` | `4` | `auto` 的判定阈值：连接数不超过它用 compact |
 | `alignPortsInHeader` | `true` | 端口/声明的方向、类型、位宽、名称列对齐 |
-| `alignDeclarationTerminators` | `true` | 连续声明的 `;` / `,` 对齐 |
+| `alignDeclarationTerminators` | `true` | 连续声明行尾的 `;` / `,` 对齐 |
 | `alignConsecutiveAssignments` | `true` | 连续赋值的运算符对齐 |
 | `alignConsecutiveDeclarations` | `true` | 连续声明的变量名对齐 |
-| `spaceAroundBinaryOperators` | `true` | 二元运算符两侧加空格 |
-| `spaceAfterComma` | `true` | 逗号后加空格 |
+| `spaceAroundBinaryOperators` | `true` | 二元运算符两侧加一个空格 |
+| `spaceAfterComma` | `true` | 逗号后加一个空格 |
 | `maxConsecutiveBlankLines` | `1` | 最多保留几个连续空行 |
-| `ensureTrailingNewline` | `true` | 文件末尾保留一个换行 |
-| `formatOnParseError` | `false` | 有语法错误时是否仍然格式化 |
-| `instanceLayout` | `auto` | 例化排版：`explode` / `compact` / `auto` / `off` |
-| `compactInstanceMaxPorts` | `4` | `auto` 判定阈值：端口数不超过它就用 compact |
+| `ensureTrailingNewline` | `true` | 文件以恰好一个换行结尾 |
+| `formatOnParseError` | `false` | 有语法错误时是否仍然格式化（默认关闭，避免重排不完整代码） |
 | `caseItemOnSameLine` | `true` | `case` 单语句项与标签同行（`IDLE: state <= RUN;`） |
-| `alignTerminatorMaxPad` | `16` | 终结符 / 列对齐允许的最大填充，超出则放弃该列 |
+| `alignTerminatorMaxPad` | `16` | 行尾 `;` 列对齐允许的最大填充，超出则放弃该列；`0` 不限制 |
+| `trace.server` | `off` | 输出格式化请求日志（`messages`），排查插件自身问题时用 |
 
 ### 关闭展开
 
@@ -248,7 +340,7 @@ code --install-extension sv-formatter-0.6.0.vsix
 ```json
 {
   "systemverilogFormatter.explodeDeclarations": false,
-  "systemverilogFormatter.explodeInstancePorts": false
+  "systemverilogFormatter.instanceLayout": "off"
 }
 ```
 
@@ -265,7 +357,8 @@ code --install-extension sv-formatter-0.6.0.vsix
 
    | 触发方式 | 说明 |
    |----------|------|
-   | `Ctrl+Alt+K` | 插件自带的快捷键 |
+   | `Ctrl+Alt+K` | 插件自带的快捷键，按当前 `instanceLayout` 设置格式化 |
+   | `Ctrl+Alt+L` | 弹出选择框，**本次**指定例化布局（explode / compact / auto），不影响设置 —— 详见上文 `Ctrl+Alt+L` 一节 |
    | `Ctrl+K Ctrl+F` | VSCode 内置 `Format Selection`，走同一个 range provider |
    | 右键 → **Format SystemVerilog Selection Only** | 命令面板同名命令 |
    | `Ctrl+Alt+F` | 全文格式化（对比用） |
@@ -280,6 +373,28 @@ code --install-extension sv-formatter-0.6.0.vsix
    }
    ```
 
+### 选区格式化时指定例化布局
+
+`Ctrl+Alt+L` 会先弹出四选一，再格式化选区：
+
+| 选项 | 行为 |
+|------|------|
+| **Explode** | 一端口一行、列对齐。端口多、要逐个确认连线时用 |
+| **Compact** | 整实例压成一行，相邻同模块实例的 `.port(expr)` 对齐成表 |
+| **Auto** | 连接数 ≤ `compactInstanceMaxPorts` 用 compact，否则 explode |
+| **按当前配置** | 不覆盖，沿用 `systemverilogFormatter.instanceLayout` |
+
+上次的选择会浮到列表首位并预选，重复同一操作就是 `Ctrl+Alt+L` → 回车 → 回车。
+
+也可以绕过弹窗，把这两个命令直接绑到你自己的键位上（默认不绑）：
+
+```json
+{ "key": "ctrl+alt+e", "command": "svFormatter.formatSelectionExplode",
+  "when": "editorTextFocus && editorHasSelection && editorLangId == systemverilog" },
+{ "key": "ctrl+alt+c", "command": "svFormatter.formatSelectionCompact",
+  "when": "editorTextFocus && editorHasSelection && editorLangId == systemverilog" }
+```
+
 行为细节：
 
 - 选区自动**扩展到包含它的最小完整语法块**（`always_construct` / `data_declaration` /
@@ -287,12 +402,19 @@ code --install-extension sv-formatter-0.6.0.vsix
   只替换该块的行范围，**块外逐字节不变**。
 - 选区恰好是完整块时，扩展后就是它本身；选区落在块内部（如只选了 `if` 那一行）时，
   会向上扩到包含它的 `always`/`begin-end` 块。
+- 位于 module 体内的块（例化、声明、`always`、`generate` …）在隔离格式化时会**临时包进一个
+  一次性 `module`** 再解析，否则一条裸的 `tiny u_a (.clk(clk));` 会被语法分析当成函数调用语句，
+  实例化布局完全不生效。包裹层在输出前被剥掉，并扣回它引入的那一级缩进。
+  顶层 `module` / `interface` / `package` 声明与宏定义**不包裹**（嵌套非法 / 续行会被改缩进）。
 - 缩进按块**首行非空行的前导空白**推断基础层级，量化到 `indentSize`（或 tab 站），
   引擎在隔离块上做结构化缩进，最终每行 = 基础前缀 + 引擎缩进。
 - 块有语法错误、或选区跨了多个块而无法合成一个合法片段时，**拒绝执行并提示**，
   返回 0 个编辑（宁可不改也不乱改）。此行为受 `formatOnParseError` 影响。
 - 三条入口（快捷键 / 内置 Format Selection / 命令）共用同一个 `selectionEdit()`，
   行为完全一致。旧实现「格式化整篇再按行号切片」已废弃——一旦选区上方行数变化就会切错位。
+
+> 已知限制：端口连接列表内含 `` `ifdef `` 时，`expandToBlock` 判定该块带语法错误会返回「跳过」。
+> 这类例化目前只能用整篇格式化或手工整理。
 
 
 ## 示例

@@ -2,7 +2,7 @@
   "name": "sv-formatter",
   "displayName": "SystemVerilog Formatter",
   "description": "Structure-driven SystemVerilog formatter: indentation derived from the parse tree, column alignment, macro-safe, and idempotent.",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "publisher": "yzt000000",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -63,27 +63,32 @@
           "default": 4,
           "minimum": 0,
           "maximum": 16,
-          "description": "Number of spaces per indentation level. Ignored when useTabs is true."
+          "description": "Number of spaces per indentation level. Ignored when useTabs is true.",
+          "markdownDescription": "每级缩进的空格数。`useTabs` 为 `true` 时此项被忽略。"
         },
         "systemverilogFormatter.useTabs": {
           "type": "boolean",
           "default": false,
-          "description": "Indent with tabs instead of spaces."
+          "description": "Indent with tabs instead of spaces.",
+          "markdownDescription": "用 Tab 缩进，而不是空格。"
         },
         "systemverilogFormatter.explodePortList": {
           "type": "boolean",
           "default": true,
-          "description": "Put each module port on its own line."
+          "description": "Put each module port on its own line.",
+          "markdownDescription": "模块端口列表一行一个端口。"
         },
         "systemverilogFormatter.explodeDeclarations": {
           "type": "boolean",
           "default": true,
-          "description": "Put each declared signal on its own line, repeating the full type prefix (wire a, b; becomes two wire declarations)."
+          "description": "Put each declared signal on its own line, repeating the full type prefix (wire a, b; becomes two wire declarations).",
+          "markdownDescription": "多信号声明拆成一行一个，每行重复完整类型前缀（`wire a, b;` → 两行 `wire` 声明）。"
         },
         "systemverilogFormatter.explodeInstancePorts": {
           "type": "boolean",
           "default": true,
-          "description": "Deprecated: set instanceLayout to \"off\" instead. When false, instance text is left untouched."
+          "description": "Deprecated: set instanceLayout to \"off\" instead. When false, instance text is left untouched.",
+          "markdownDescription": "**已废弃**，请改用 `#systemverilogFormatter.instanceLayout#` 设为 `off`。此项为 `false` 时例化原文不动。"
         },
         "systemverilogFormatter.instanceLayout": {
           "type": "string",
@@ -94,67 +99,77 @@
             "off"
           ],
           "enumDescriptions": [
-            "One port connection per line, with the `.port(expr)` columns aligned. Best for instances with a large port map.",
-            "The whole instance on one line, and the `.port(expr)` columns of neighbouring instances of the same module aligned into a table. Best for many small instances of the same module.",
-            "Use compact when the instance has at most compactInstanceMaxPorts connections, explode otherwise.",
-            "Leave the instance text as written."
+            "每个连接一行，`.port(expr)` 各列对齐。端口多、要逐个确认连线方向时用。",
+            "整个实例压成一行，同模块相邻实例的 `.port(expr)` 列对齐成表。适合成批的小端口实例。",
+            "连接数 ≤ `compactInstanceMaxPorts` 用 compact，超过则 explode。",
+            "保持例化原文不动。"
           ],
           "default": "explode",
-          "markdownDescription": "How to lay out a module instantiation's port connections.\n\n- `explode` — one connection per line, columns aligned.\n- `compact` — one line per instance, with `.port(expr)` columns aligned across neighbouring instances of the same module.\n- `auto` — `compact` up to `#systemverilogFormatter.compactInstanceMaxPorts#` connections, `explode` above that.\n- `off` — leave the source text alone.\n\nA connection list containing a comment or a `` `ifdef `` always explodes: folding it onto one line would drop what is written there."
+          "markdownDescription": "模块例化（instance）端口连接的排版方式。\n\n- `explode` —— 每个连接一行，`.port(expr)` 各列对齐。端口多、要逐个 review 连线时用。\n- `compact` —— 整个实例压成一行，同模块相邻实例的 `.port(expr)` 列对齐成表。适合成批的小端口实例。\n- `auto` —— 连接数不超过 `#systemverilogFormatter.compactInstanceMaxPorts#` 时用 compact，超过则 explode。日常最省心。\n- `off` —— 保持源码原样，不重排例化。\n\n连接列表里含注释或 `` `ifdef `` 时**强制走 explode**：折成一行会吃掉写在那里的内容。\n\n> 只想对**某一次选中**改用别的布局，用 `Ctrl+Alt+L`（Format Selection with Layout），\n> 它按本次调用覆盖该项，不改动 `settings.json`。"
         },
         "systemverilogFormatter.compactInstanceMaxPorts": {
           "type": "number",
           "default": 4,
           "minimum": 0,
           "maximum": 64,
-          "description": "Port count up to which instanceLayout \"auto\" picks the compact layout."
+          "description": "Port count up to which instanceLayout \"auto\" picks the compact layout.",
+          "markdownDescription": "`instanceLayout` 为 `auto` 时的判定阈值：连接数不超过该值用 compact 布局，超过则 explode。"
         },
         "systemverilogFormatter.alignPortsInHeader": {
           "type": "boolean",
           "default": true,
-          "description": "Align the direction, type, width and name columns of module ports and declarations."
+          "description": "Align the direction, type, width and name columns of module ports and declarations.",
+          "markdownDescription": "对齐模块端口与声明的方向、类型、位宽、名称列。"
         },
         "systemverilogFormatter.alignDeclarationTerminators": {
           "type": "boolean",
           "default": true,
-          "description": "Align the trailing ; and , of consecutive declarations."
+          "description": "Align the trailing ; and , of consecutive declarations.",
+          "markdownDescription": "对齐连续声明行尾的 `;` 与 `,`。"
         },
         "systemverilogFormatter.alignConsecutiveAssignments": {
           "type": "boolean",
           "default": true,
-          "description": "Align the assignment operator of consecutive assignment statements."
+          "description": "Align the assignment operator of consecutive assignment statements.",
+          "markdownDescription": "对齐连续赋值语句的赋值运算符。"
         },
         "systemverilogFormatter.alignConsecutiveDeclarations": {
           "type": "boolean",
           "default": true,
-          "description": "Align the declared names of consecutive declarations."
+          "description": "Align the declared names of consecutive declarations.",
+          "markdownDescription": "对齐连续声明中的变量名。"
         },
         "systemverilogFormatter.spaceAroundBinaryOperators": {
           "type": "boolean",
           "default": true,
-          "description": "Put spaces around binary operators."
+          "description": "Put spaces around binary operators.",
+          "markdownDescription": "二元运算符两侧加一个空格。"
         },
         "systemverilogFormatter.spaceAfterComma": {
           "type": "boolean",
           "default": true,
-          "description": "Put a space after commas."
+          "description": "Put a space after commas.",
+          "markdownDescription": "逗号后加一个空格。"
         },
         "systemverilogFormatter.maxConsecutiveBlankLines": {
           "type": "number",
           "default": 1,
           "minimum": 0,
           "maximum": 5,
-          "description": "Maximum number of consecutive blank lines to keep."
+          "description": "Maximum number of consecutive blank lines to keep.",
+          "markdownDescription": "最多保留几个连续空行。"
         },
         "systemverilogFormatter.ensureTrailingNewline": {
           "type": "boolean",
           "default": true,
-          "description": "Ensure the file ends with exactly one newline."
+          "description": "Ensure the file ends with exactly one newline.",
+          "markdownDescription": "确保文件以恰好一个换行结尾。"
         },
         "systemverilogFormatter.formatOnParseError": {
           "type": "boolean",
           "default": false,
-          "description": "Format even when the source has syntax errors. Off by default to avoid mangling incomplete code."
+          "description": "Format even when the source has syntax errors. Off by default to avoid mangling incomplete code.",
+          "markdownDescription": "源码有语法错误时仍然格式化。默认关闭——不完整的代码被重排后更难定位问题。"
         },
         "systemverilogFormatter.trace.server": {
           "type": "string",
@@ -162,20 +177,27 @@
             "off",
             "messages"
           ],
+          "enumDescriptions": [
+            "不输出日志。",
+            "在控制台打印每次格式化请求命中的块类型，排查插件自身问题时用。"
+          ],
           "default": "off",
-          "description": "Trace formatting requests (for debugging the extension)."
+          "description": "Trace formatting requests (for debugging the extension).",
+          "markdownDescription": "输出格式化请求日志，用于排查插件本身的问题。设为 `messages` 会在控制台打印每次请求命中的块类型。"
         },
         "systemverilogFormatter.caseItemOnSameLine": {
           "type": "boolean",
           "default": true,
-          "description": "Keep a case item whose body is a single simple statement on the label line (`2'd0: sel = 1'b1;`)."
+          "description": "Keep a case item whose body is a single simple statement on the label line (`2'd0: sel = 1'b1;`).",
+          "markdownDescription": "`case` 项的主体只有一条简单语句时，与标签留在同一行（`2'd0: sel = 1'b1;`）。"
         },
         "systemverilogFormatter.alignTerminatorMaxPad": {
           "type": "number",
           "default": 16,
           "minimum": 0,
           "maximum": 120,
-          "description": "Give up on aligning the trailing `;` of a declaration group when the widest line is further than this many columns from the narrowest. 0 disables the limit."
+          "description": "Give up on aligning the trailing `;` of a declaration group when the widest line is further than this many columns from the narrowest. 0 disables the limit.",
+          "markdownDescription": "一组成员中最宽行与最窄行相差超过该列数时，放弃对齐行尾 `;`，避免一个长表达式把整组推飞。`0` 表示不限制。"
         }
       }
     },
@@ -189,6 +211,21 @@
         "command": "svFormatter.formatSelectionOnly",
         "title": "Format SystemVerilog Selection Only",
         "category": "SV Formatter"
+      },
+      {
+        "command": "svFormatter.formatSelectionWithLayout",
+        "title": "Format SystemVerilog Selection with Layout...",
+        "category": "SV Formatter"
+      },
+      {
+        "command": "svFormatter.formatSelectionExplode",
+        "title": "Format SystemVerilog Selection (Instance: Explode)",
+        "category": "SV Formatter"
+      },
+      {
+        "command": "svFormatter.formatSelectionCompact",
+        "title": "Format SystemVerilog Selection (Instance: Compact)",
+        "category": "SV Formatter"
       }
     ],
     "keybindings": [
@@ -200,6 +237,11 @@
       {
         "command": "svFormatter.formatSelectionOnly",
         "key": "ctrl+alt+k",
+        "when": "editorTextFocus && editorHasSelection && (editorLangId == systemverilog || editorLangId == verilog)"
+      },
+      {
+        "command": "svFormatter.formatSelectionWithLayout",
+        "key": "ctrl+alt+l",
         "when": "editorTextFocus && editorHasSelection && (editorLangId == systemverilog || editorLangId == verilog)"
       }
     ],
