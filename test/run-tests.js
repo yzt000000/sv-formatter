@@ -1202,6 +1202,71 @@ console.log('\n=== fragment formatting tests ===');
     mac.text.includes('\n    a(x); \\\n'), mac.text);
 }
 
+// ---------------------------------------------------------------------------
+// 32. A directive on its own line inside a port list keeps that line.
+//
+//     `named_port_connection` holds a leading `conditional_compilation_directive`
+//     child, so the whole node used to be emitted as one connection: explode
+//     wrote "`ifdef WIDE .b (b)," and compact folded the list into a single
+//     line. Either way the directive stopped starting a line, which is the only
+//     position the preprocessor reads it in — the formatted file no longer meant
+//     what the source meant. The directives are now split out as raw items.
+{
+  const { resolveConfig } = require('../src/config');
+
+  const src = [
+    'module t;',
+    '    mod u_x (',
+    '        .a (a),',
+    '`ifdef WIDE',
+    '        .b (b),',
+    '`endif',
+    '        .c (c)',
+    '    );',
+    'endmodule',
+    '',
+  ].join('\n');
+
+  const expected = [
+    'module t;',
+    '    mod u_x (',
+    '        .a (a),',
+    '        `ifdef WIDE',
+    '        .b (b),',
+    '        `endif',
+    '        .c (c)',
+    '    );',
+    'endmodule',
+    '',
+  ].join('\n');
+
+  for (const mode of ['explode', 'compact', 'auto', 'off']) {
+    const out = format(src, resolveConfig({ instanceLayout: mode, compactInstanceMaxPorts: 8 }));
+    check(`ifdef-in-ports/${mode}: directive keeps its own line`, out.text === expected,
+      JSON.stringify(out.text));
+    check(`ifdef-in-ports/${mode}: still parses`, out.hadError === false, String(out.hadError));
+    // A directive line must contain nothing but the directive.
+    const glued = out.text.split('\n')
+      .filter((l) => /^\s*`(?:ifdef|ifndef|elsif|else|endif)\b/.test(l))
+      .filter((l) => /`(?:ifdef|ifndef|elsif|else|endif)\s+\S+\s+\S/.test(l));
+    check(`ifdef-in-ports/${mode}: no connection glued onto a directive`, glued.length === 0,
+      glued.join(' | '));
+    const again = format(out.text, resolveConfig({ instanceLayout: mode, compactInstanceMaxPorts: 8 }));
+    check(`ifdef-in-ports/${mode}: idempotent`, again.text === out.text,
+      JSON.stringify(again.text));
+  }
+
+  // The plain (directive-free) instance still collapses under `off`: forcing
+  // explode is scoped to lists that actually carry raw items.
+  const plain = format(
+    ['module t;', '    tiny u_a (', '        .clk(clk),', '        .d(q0)', '    );', 'endmodule', ''].join('\n'),
+    resolveConfig({ instanceLayout: 'off' })
+  );
+  check('ifdef-in-ports: off still collapses a directive-free instance',
+    plain.text === ['module t;', '    tiny u_a ( .clk(clk), .d(q0) );', 'endmodule', ''].join('\n'),
+    JSON.stringify(plain.text));
+}
+
 // ---------------------------------------------------------------- summary
 console.log('\n=== summary ===');
 console.log(`passed: ${passed}`);

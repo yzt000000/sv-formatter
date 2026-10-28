@@ -125,7 +125,7 @@ endmodule
 |----|------|------|
 | `explode` | 每个端口连接一行，端口名列表对齐 | 端口多、连接表达式长 |
 | `compact` | 一行一个 instance，跨 instance 按列对齐 `.port(expr)` | 端口少（≤4）、例化很多（如按 bit 展开的 `sync_cell`） |
-| `auto` | 端口数 ≤ `compactInstanceMaxPorts` 用 compact，否则 explode | 默认 |
+| `auto` | 端口数 ≤ `compactInstanceMaxPorts` 用 compact，否则 explode | 想一个设置覆盖两种场景 |
 | `off` | 例化原文不动 | — |
 
 `auto` 的实际效果（`demo/instances.sv`）：
@@ -156,7 +156,8 @@ endmodule
 
 - compact 的分组要求**同模块 + 同缩进 + 同连接数 + 同连接形状 + 端口名顺序一致**。
   端口顺序不同的两次例化若共用列宽，每项都会被推到错误位置，因此不并组。
-- 连接里带注释或 `` `ifdef `` 时强制回退 `explode`，折行会吞掉注释或指令。
+- 连接里带注释时强制回退 `explode`；连接列表里**独占一行**的 `` `ifdef `` / `` `endif ``
+  同样强制 `explode`，且指令保持独占一行——折进一行或粘上后面的连接，它就不再是指令了。
 - 发射器只产出无 padding 的规范文本，列宽由对齐阶段从行上的 `{prefix, name, items}`
   载荷重建，因此重复格式化不会累积空格（幂等）。
 - expr 列过宽时按 `alignTerminatorMaxPad` 放弃该列对齐，避免一个长表达式把整组推飞。
@@ -245,8 +246,9 @@ Compact 真正的价值在**成批实例**：同模块、相邻行的实例会�
 ### 什么时候别用它
 
 - **要整篇统一形态**：改 `instanceLayout` 后按 `Ctrl+Alt+F`，别一段一段选。
-- **端口列表里含 `` `ifdef `` 的例化**：`expandToBlock` 会判为语法错误而跳过（已知限制，
-  见文末），改用整篇格式化。
+- **`` `ifdef `` 与连接内容写在同一行的例化**（`.a (`ifdef WIDE x `else y `endif)`）：
+  整篇和选区都按语法错误跳过，因为预处理指令必须独占一行。把指令改成独占一行即可，
+  那时三种布局都正常（这一类会自动走 explode，保证指令不被折走）。
 - **想连格式之外的语义一起动**（改端口名、重排实例顺序）：格式化器不做这些，它只重排空白。
 
 ## 安装
@@ -255,7 +257,7 @@ Compact 真正的价值在**成批实例**：同模块、相邻行的实例会�
 # 打包并安装
 npm install
 npx @vscode/vsce package
-code --install-extension sv-formatter-0.6.1.vsix
+code --install-extension sv-formatter-0.6.2.vsix
 
 # 或者在 VSCode 里按 F5 启动扩展开发宿主调试
 ```
@@ -413,8 +415,9 @@ code --install-extension sv-formatter-0.6.1.vsix
 - 三条入口（快捷键 / 内置 Format Selection / 命令）共用同一个 `selectionEdit()`，
   行为完全一致。旧实现「格式化整篇再按行号切片」已废弃——一旦选区上方行数变化就会切错位。
 
-> 已知限制：端口连接列表内含 `` `ifdef `` 时，`expandToBlock` 判定该块带语法错误会返回「跳过」。
-> 这类例化目前只能用整篇格式化或手工整理。
+> 已知限制：`` `ifdef `` 与连接内容**写在同一行**时（`.a (`ifdef W x `else y `endif)`），
+> 该块按语法错误处理，选区格式化返回「跳过」。指令独占一行的写法不受影响——那种写法会被
+> 拆成独立行并强制 explode，`Ctrl+Alt+L` 选什么都一样。
 
 
 ## 示例
@@ -468,7 +471,7 @@ endmodule
 ## 测试
 
 ```bash
-npm test        # 382 项断言 + 激活/provider 冒烟
+npm test        # 409 项断言 + 激活/provider 冒烟
 ```
 
 测试对每个用例校验三条性质：
@@ -547,7 +550,7 @@ tools/
   sv-fmt.js      CLI，用于 CI 格式检查
   fmt-corpus.js  语料回归：整体格式化 test_rtl/ 并写报告
 test/
-  run-tests.js   断言测试套件（382 条）
+  run-tests.js   断言测试套件（409 条）
   activate-smoke.js  桩件跑 activate()，校验 provider / 命令注册与选区编辑
 test_rtl/        80 份真实 JESD204B RTL，语料回归输入
 demo/            手动试用的代表文件（不动 test_rtl 的基线）
@@ -578,8 +581,8 @@ in the extension host process; no file content ever leaves your machine.
 
 ```bash
 npm install
-npm test                     # 382 assertions + activate/provider smoke
-npx vsce package             # produces sv-formatter-0.6.0.vsix
+npm test                     # 409 assertions + activate/provider smoke
+npx vsce package             # produces sv-formatter-0.6.2.vsix
 npx vsce publish --pat $VSCE_PAT
 ```
 

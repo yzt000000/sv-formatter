@@ -538,7 +538,13 @@ class Formatter {
     }
 
     const ports = portConnections(inst);
-    const layout = this.instanceLayout(ports);
+    let layout = this.instanceLayout(ports);
+    // `off` cannot be honoured for a list that carries line-start directives:
+    // the emitter collapses the instance onto one line, which pulls every
+    // connection up next to its directive and the preprocessor stops reading it
+    // as one. Explode is the only layout that keeps those lines, so a list with
+    // raw (directive) items always explodes.
+    if (layout === 'off' && ports.some((p) => p.isRaw)) layout = 'explode';
     if (layout === 'off' || !ports.length) {
       this.emit(this.text(node), { indent: this.indent, group: 'inst' });
       return;
@@ -2733,6 +2739,41 @@ function portConnections(inst) {
       const c = n.namedChild(i);
       if (c.type === 'port_connection' || c.type === 'named_port_connection' ||
           c.type === 'ordered_port_connection' || c.type === 'wildcard_port_connection') {
+        // A directive written on its own line inside the list is a *leading*
+        // child of the connection that follows it, not a sibling of the list:
+        //
+        //     .a (a),
+        //   `ifdef WIDE
+        //     .b (b),
+        //
+        // is one `named_port_connection` of [conditional_compilation_directive,
+        // simple_identifier, expression]. Emitting that node as a single
+        // connection glued `.b (b),` onto the directive's line, and the
+        // preprocessor only reads a directive that starts a line — so the
+        // formatted file no longer meant what the source meant. Split the
+        // directives out first; they become `isRaw` items, which also makes
+        // `instanceLayout()` fall back to explode for the whole list.
+        let lead = 0;
+        while (lead < c.namedChildCount &&
+               c.namedChild(lead).type === 'conditional_compilation_directive') {
+          lead++;
+        }
+        if (lead > 0) {
+          for (let k = 0; k < lead; k++) {
+            const d = c.namedChild(k);
+            found.push({
+              startIndex: d.startIndex, endIndex: d.endIndex,
+              text: d.text, comment: '', isRaw: true,
+            });
+          }
+          const restStart = c.namedChild(lead - 1).endIndex;
+          const rest = c.text.slice(restStart - c.startIndex)
+            .replace(/^(?:[^\S\r\n]*\r?\n)+/, '').trim();
+          if (rest) {
+            found.push({ startIndex: restStart, endIndex: c.endIndex, text: rest, comment: '' });
+          }
+          continue;
+        }
         found.push({ startIndex: c.startIndex, endIndex: c.endIndex, text: c.text, comment: '' });
         continue;
       }

@@ -5,6 +5,25 @@ All notable changes to this extension are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-10-29
+
+### Fixed
+
+- **端口列表里独占一行的 `` `ifdef `` / `` `endif `` 会被折走，改变代码含义。**
+  `named_port_connection` 把前导的 `conditional_compilation_directive` 当成自己的子节点，
+  于是整段被当作一个连接发射：`explode` 写出 `` `ifdef WIDE .b (b), ``（指令后面粘着连接），
+  `compact`/`auto` 把整张连接列表折成一行，指令落到行中间。预处理只识别**位于行首**的指令，
+  折走之后它不再是指令，格式化结果与源码语义不同。现在把前导指令拆成独立的 raw 项：
+  指令保持独占一行，该连接列表强制走 `explode`（`off` 亦同，因为没有别的布局能保住这几行）。
+  实测 explode / compact / auto / off 四档输出一致且幂等，选区路径同样生效。
+  不含指令的例化不受影响（`off` 仍按原行为折叠成一行）。
+
+### Changed
+
+- 关于 `` `ifdef `` 的文档表述与实际行为对齐：**指令独占一行**时三种布局都正常（自动 explode、
+  指令原位保留）；**指令与连接内容写在同一行**时（`.a (`ifdef W x `else y `endif)`）
+  整篇与选区都按语法错误跳过——这是预处理器的限制，不是格式化器能修的。
+
 ## [0.6.1] - 2026-10-29
 
 ### Added

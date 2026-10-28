@@ -2,7 +2,7 @@
   "name": "sv-formatter",
   "displayName": "SystemVerilog Formatter",
   "description": "Structure-driven SystemVerilog formatter: indentation derived from the parse tree, column alignment, macro-safe, and idempotent.",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "publisher": "yzt000000",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -105,7 +105,7 @@
             "保持例化原文不动。"
           ],
           "default": "explode",
-          "markdownDescription": "模块例化（instance）端口连接的排版方式。\n\n- `explode` —— 每个连接一行，`.port(expr)` 各列对齐。端口多、要逐个 review 连线时用。\n- `compact` —— 整个实例压成一行，同模块相邻实例的 `.port(expr)` 列对齐成表。适合成批的小端口实例。\n- `auto` —— 连接数不超过 `#systemverilogFormatter.compactInstanceMaxPorts#` 时用 compact，超过则 explode。日常最省心。\n- `off` —— 保持源码原样，不重排例化。\n\n连接列表里含注释或 `` `ifdef `` 时**强制走 explode**：折成一行会吃掉写在那里的内容。\n\n> 只想对**某一次选中**改用别的布局，用 `Ctrl+Alt+L`（Format Selection with Layout），\n> 它按本次调用覆盖该项，不改动 `settings.json`。"
+          "markdownDescription": "模块例化（instance）端口连接的排版方式。\n\n- `explode` —— 每个连接一行，`.port(expr)` 各列对齐。端口多、要逐个 review 连线时用。\n- `compact` —— 整个实例压成一行，同模块相邻实例的 `.port(expr)` 列对齐成表。适合成批的小端口实例。\n- `auto` —— 连接数不超过 `#systemverilogFormatter.compactInstanceMaxPorts#` 时用 compact，超过则 explode。日常最省心。\n- `off` —— 保持源码原样，不重排例化（例外：列表里有独占一行的指令时仍走 explode，否则指令会被折进一行）。\n\n连接列表里含注释、或 `` `ifdef `` 独占一行时**强制走 explode**：折成一行会吃掉注释，或让指令不再独占一行（预处理只识别行首指令）。\n\n> 只想对**某一次选中**改用别的布局，用 `Ctrl+Alt+L`（Format Selection with Layout），\n> 它按本次调用覆盖该项，不改动 `settings.json`。"
         },
         "systemverilogFormatter.compactInstanceMaxPorts": {
           "type": "number",
