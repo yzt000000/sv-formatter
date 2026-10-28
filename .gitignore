@@ -2,3 +2,18 @@ node_modules/
 *.vsix
 .vscode-test/
 *.log
+
+# Formatted corpus output (regenerate with tools/fmt-corpus.js)
+test_rtl_fm/
+
+# Scratch space for manual formatter experiments
+.tmp/
+
+# Editor / tool caches
+.dide/
+**/.dide/
+.vscode/pulverize.json
+**/.vscode/pulverize.json
+
+# Agent working memory
+.workbuddy/

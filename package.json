@@ -2,7 +2,7 @@
   "name": "sv-formatter",
   "displayName": "SystemVerilog Formatter",
   "description": "Structure-driven SystemVerilog formatter: indentation derived from the parse tree, column alignment, macro-safe, and idempotent.",
-  "version": "0.2.4",
+  "version": "0.6.0",
   "publisher": "yzt000000",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -60,7 +60,7 @@
       "properties": {
         "systemverilogFormatter.indentSize": {
           "type": "number",
-          "default": 2,
+          "default": 4,
           "minimum": 0,
           "maximum": 16,
           "description": "Number of spaces per indentation level. Ignored when useTabs is true."
@@ -83,7 +83,31 @@
         "systemverilogFormatter.explodeInstancePorts": {
           "type": "boolean",
           "default": true,
-          "description": "Put each instance port connection on its own line."
+          "description": "Deprecated: set instanceLayout to \"off\" instead. When false, instance text is left untouched."
+        },
+        "systemverilogFormatter.instanceLayout": {
+          "type": "string",
+          "enum": [
+            "explode",
+            "compact",
+            "auto",
+            "off"
+          ],
+          "enumDescriptions": [
+            "One port connection per line, with the `.port(expr)` columns aligned. Best for instances with a large port map.",
+            "The whole instance on one line, and the `.port(expr)` columns of neighbouring instances of the same module aligned into a table. Best for many small instances of the same module.",
+            "Use compact when the instance has at most compactInstanceMaxPorts connections, explode otherwise.",
+            "Leave the instance text as written."
+          ],
+          "default": "explode",
+          "markdownDescription": "How to lay out a module instantiation's port connections.\n\n- `explode` — one connection per line, columns aligned.\n- `compact` — one line per instance, with `.port(expr)` columns aligned across neighbouring instances of the same module.\n- `auto` — `compact` up to `#systemverilogFormatter.compactInstanceMaxPorts#` connections, `explode` above that.\n- `off` — leave the source text alone.\n\nA connection list containing a comment or a `` `ifdef `` always explodes: folding it onto one line would drop what is written there."
+        },
+        "systemverilogFormatter.compactInstanceMaxPorts": {
+          "type": "number",
+          "default": 4,
+          "minimum": 0,
+          "maximum": 64,
+          "description": "Port count up to which instanceLayout \"auto\" picks the compact layout."
         },
         "systemverilogFormatter.alignPortsInHeader": {
           "type": "boolean",
@@ -140,6 +164,18 @@
           ],
           "default": "off",
           "description": "Trace formatting requests (for debugging the extension)."
+        },
+        "systemverilogFormatter.caseItemOnSameLine": {
+          "type": "boolean",
+          "default": true,
+          "description": "Keep a case item whose body is a single simple statement on the label line (`2'd0: sel = 1'b1;`)."
+        },
+        "systemverilogFormatter.alignTerminatorMaxPad": {
+          "type": "number",
+          "default": 16,
+          "minimum": 0,
+          "maximum": 120,
+          "description": "Give up on aligning the trailing `;` of a declaration group when the widest line is further than this many columns from the narrowest. 0 disables the limit."
         }
       }
     },
@@ -155,23 +191,35 @@
         "category": "SV Formatter"
       }
     ],
+    "keybindings": [
+      {
+        "command": "svFormatter.formatDocument",
+        "key": "ctrl+alt+f",
+        "when": "editorTextFocus && (editorLangId == systemverilog || editorLangId == verilog)"
+      },
+      {
+        "command": "svFormatter.formatSelectionOnly",
+        "key": "ctrl+alt+k",
+        "when": "editorTextFocus && editorHasSelection && (editorLangId == systemverilog || editorLangId == verilog)"
+      }
+    ],
     "menus": {
       "editor/context": [
         {
           "command": "svFormatter.formatDocument",
-          "when": "editorLangId == systemverilog && !editorHasSelection",
+          "when": "editorLangId == systemverilog && !editorHasSelection || editorLangId == verilog && !editorHasSelection",
           "group": "1_modification@1"
         },
         {
           "command": "svFormatter.formatSelectionOnly",
-          "when": "editorLangId == systemverilog && editorHasSelection",
+          "when": "editorLangId == systemverilog && editorHasSelection || editorLangId == verilog && editorHasSelection",
           "group": "1_modification@1"
         }
       ]
     }
   },
   "scripts": {
-    "test": "node test/run-tests.js"
+    "test": "node test/run-tests.js && node test/activate-smoke.js"
   },
   "dependencies": {
     "tree-sitter": "^0.25.1",

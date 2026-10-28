@@ -12,13 +12,17 @@ function readConfig() {
   const get = (key, fallback) => cfg.get(key, fallback);
 
   return {
-    indentSize: get('indentSize', 2),
+    indentSize: get('indentSize', 4),
     useTabs: get('useTabs', false),
     explodePortList: get('explodePortList', true),
     explodeDeclarations: get('explodeDeclarations', true),
     explodeInstancePorts: get('explodeInstancePorts', true),
+    instanceLayout: get('instanceLayout', 'explode'),
+    compactInstanceMaxPorts: get('compactInstanceMaxPorts', 4),
     alignPortsInHeader: get('alignPortsInHeader', true),
     alignDeclarationTerminators: get('alignDeclarationTerminators', true),
+    alignTerminatorMaxPad: get('alignTerminatorMaxPad', 16),
+    caseItemOnSameLine: get('caseItemOnSameLine', true),
     alignConsecutiveAssignments: get('alignConsecutiveAssignments', true),
     alignConsecutiveDeclarations: get('alignConsecutiveDeclarations', true),
     spaceAroundBinaryOperators: get('spaceAroundBinaryOperators', true),
@@ -59,52 +63,67 @@ function formatDocument(document, options) {
 }
 
 /**
- * Format a selection.
+ * Compute the edit for a "format selection" request.
  *
- * The engine always formats the complete document (its layout decisions depend
- * on enclosing blocks), then trims the edit to the requested range expanded to
- * whole lines. This avoids producing syntactically broken fragments.
+ * The engine always formats a complete translation unit, so the requested
+ * range is first grown to the smallest *block-level* syntax node containing it
+ * (an `always_construct`, a declaration, one instantiation …). Formatting that
+ * block in isolation is safe: it is syntactically self-contained, so its
+ * nesting depth is recovered from the fragment itself and nothing outside it
+ * moves — even when the number of lines inside changes.
+ *
+ * Returns
+ *   { range, text, block }  the edit to apply
+ *   { skipped: true }       the block has syntax errors and we may not touch it
+ *   null                    nothing to do
  */
-function formatRange(document, range, options) {
-  const config = readConfig();
+function selectionEdit(document, range, config) {
   const source = document.getText();
-  const result = format(source, config);
 
-  if (result.hadError && !config.formatOnParseError) {
-    return [];
-  }
-
-  // Expand the requested range to full lines.
+  // Grow the selection to whole lines: the replacement starts at the first
+  // touched line's column 0 and ends at the start of the line after the last
+  // touched one, so the trailing newline is inside the range.
   const startLine = range.start.line;
   const endLine = range.end.line + (range.end.character === 0 ? 0 : 1);
+  const selStart = document.offsetAt(new vscode.Position(startLine, 0));
+  const selEnd = endLine >= document.lineCount
+    ? source.length
+    : document.offsetAt(new vscode.Position(endLine, 0));
+  if (selEnd <= selStart) return null;
 
-  const startOffset = document.offsetAt(new vscode.Position(startLine, 0));
-  const endOffset = Math.min(
-    source.length,
-    document.offsetAt(new vscode.Position(endLine, 0))
-  );
-
-  // Map the original line span onto the formatted output.
-  const formattedLines = result.text.split('\n');
-  const originalLines = source.split('\n');
-  const lineCount = Math.min(endLine, originalLines.length) - startLine;
-  if (lineCount <= 0) return [];
-
-  // Find the corresponding slice by matching indentation-stable anchors is
-  // fragile; instead take the same line indices when counts allow, otherwise
-  // fall back to formatting the whole document.
-  if (Math.abs(formattedLines.length - originalLines.length) > formattedLines.length) {
-    const whole = new vscode.Range(document.positionAt(0), document.positionAt(source.length));
-    return [vscode.TextEdit.replace(whole, result.text)];
+  let fmtStart = selStart;
+  let fmtEnd = selEnd;
+  const block = expandToBlock(source, selStart, selEnd);
+  if (block) {
+    fmtStart = source.lastIndexOf('\n', block.start) + 1;
+    const lineEnd = source.indexOf('\n', block.end);
+    fmtEnd = lineEnd === -1 ? source.length : lineEnd + 1;
   }
 
-  const slice = formattedLines.slice(startLine, startLine + lineCount).join('\n');
-  if (!slice.trim()) return [];
+  const fragText = source.slice(fmtStart, fmtEnd);
+  if (!fragText.trim()) return null;
 
-  return [vscode.TextEdit.replace(
-    new vscode.Range(document.positionAt(startOffset), document.positionAt(endOffset)),
-    slice
-  )];
+  const { text, hadError } = formatFragment(fragText, config);
+  if (hadError && !config.formatOnParseError) return { skipped: true };
+
+  return {
+    range: new vscode.Range(document.positionAt(fmtStart), document.positionAt(fmtEnd)),
+    text,
+    block,
+  };
+}
+
+/**
+ * Range formatting provider entry point (`Format Selection`, Ctrl+K Ctrl+F).
+ *
+ * Deliberately returns no edit rather than a partial one when the block does
+ * not parse: a formatter that rewrites code it could not understand is worse
+ * than one that declines to act.
+ */
+function formatRange(document, range, options) {
+  const result = selectionEdit(document, range, readConfig());
+  if (!result || result.skipped || !result.text) return [];
+  return [vscode.TextEdit.replace(result.range, result.text)];
 }
 
 /** Indent-only formatting on demand (Format Document Indentation). */
@@ -122,14 +141,6 @@ class SvFormatterProvider {
   }
 }
 
-class SvIndentProvider {
-  provideDocumentOnTypeFormattingEdits() {
-    // On-type formatting is intentionally not implemented: this formatter makes
-    // whole-block layout decisions, so partial on-type edits would fight it.
-    return [];
-  }
-}
-
 function activate(context) {
   const selector = [
     { language: 'systemverilog', scheme: '*' },
@@ -139,11 +150,6 @@ function activate(context) {
   context.subscriptions.push(
     vscode.languages.registerDocumentFormattingEditProvider(selector, new SvFormatterProvider()),
     vscode.languages.registerDocumentRangeFormattingEditProvider(selector, new SvFormatterProvider()),
-    vscode.languages.registerDocumentOnTypeFormattingEditProvider(
-      [{ language: 'systemverilog', scheme: '*' }],
-      new SvIndentProvider(),
-      '\n'
-    ),
     vscode.commands.registerCommand('svFormatter.formatDocument', async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) return;
@@ -181,57 +187,22 @@ function activate(context) {
       const config = readConfig();
       const trace = vscode.workspace.getConfiguration(CONFIG_SECTION).get('trace.server', 'off');
 
-      const source = document.getText();
-
-      // Expand the selection to whole lines. The replacement covers from the
-      // start line's first column up to (but not including) the line after the
-      // last touched line, so the trailing newline of the last line is included
-      // and the following line is left intact.
-      const startLine = selection.start.line;
-      const endLine = selection.end.line + (selection.end.character === 0 ? 0 : 1);
-      const selStart = document.offsetAt(new vscode.Position(startLine, 0));
-      const selEnd = endLine >= document.lineCount
-        ? source.length
-        : document.offsetAt(new vscode.Position(endLine, 0));
-
-      // Grow the selection to the smallest block-level syntax node that contains
-      // it (always_construct / data_declaration / module_declaration / …). The
-      // block boundary is syntactically natural, so re-formatting it never
-      // dangles indentation into the surrounding text and line-count changes
-      // inside the block do not realign anything outside it. Falls back to the
-      // raw line range when the document does not parse or the range is not
-      // inside any block.
-      let fmtStart = selStart;
-      let fmtEnd = selEnd;
-      const block = expandToBlock(source, selStart, selEnd);
-      if (block) {
-        fmtStart = source.lastIndexOf('\n', block.start) + 1;
-        let lineEnd = source.indexOf('\n', block.end);
-        fmtEnd = lineEnd === -1 ? source.length : lineEnd + 1;
-      }
-
-      const fragText = source.slice(fmtStart, fmtEnd);
-      if (!fragText.trim()) return;
-
-      const { text: formatted, hadError } = formatFragment(fragText, config);
-      if (trace === 'messages') {
-        console.log(`[sv-formatter] selection ${document.fileName}: ` +
-          `block=${block ? block.type : 'line-range'} hadError=${hadError}`);
-      }
-      if (hadError && !config.formatOnParseError) {
+      const result = selectionEdit(document, selection, config);
+      if (!result) return;
+      if (result.skipped) {
         vscode.window.showWarningMessage(
           'SV Formatter: 选区有语法错误，已跳过 ' +
           '(enable systemverilogFormatter.formatOnParseError to override).'
         );
         return;
       }
+      if (trace === 'messages') {
+        console.log(`[sv-formatter] selection ${document.fileName}: ` +
+          `block=${result.block ? result.block.type : 'line-range'}`);
+      }
 
-      const replaceRange = new vscode.Range(
-        document.positionAt(fmtStart),
-        document.positionAt(fmtEnd)
-      );
       const edit = new vscode.WorkspaceEdit();
-      edit.set(document.uri, [vscode.TextEdit.replace(replaceRange, formatted)]);
+      edit.set(document.uri, [vscode.TextEdit.replace(result.range, result.text)]);
       await vscode.workspace.applyEdit(edit);
     })
   );

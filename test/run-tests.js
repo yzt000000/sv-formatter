@@ -132,6 +132,7 @@ function checkBalance(name, result) {
 }
 
 function runCase(name, src, config) {
+  config = Object.assign({ indentSize: 2 }, config);
   console.log(`\n[${name}]`);
   const r = checkIdempotent(name, src, config);
   checkLossless(name, src, r);
@@ -348,7 +349,7 @@ console.log('=== SystemVerilog formatter tests ===');
 // 14. Broken code is reported, not mangled.
 {
   const src = 'module k;\n  logic a\n  logic b\nendmodule\n';
-  const r = format(src, {});
+  const r = format(src, { indentSize: 2 });
   check('parse-error: flagged', r.hadError === true, JSON.stringify(r.hadError));
 }
 
@@ -464,8 +465,14 @@ console.log('=== SystemVerilog formatter tests ===');
   const lines = r.text.split('\n');
   check('header-flush: no leading indent on parameter',
     lines.includes('parameter WIDTH = 1'), r.text);
+  const portLines = lines.filter((l) => /^(?:input|output|inout)\b/.test(l));
   check('header-flush: no leading indent on ports',
-    lines.some((l) => l.startsWith('input  wire              clk,')), r.text);
+    portLines.length === 3, r.text);
+  // …and their signal names still share one column.
+  check('header-flush: port names share a column',
+    new Set(portLines.map((l) => l.search(/\w+\s*[,\s]*$/))).size === 1 ||
+    new Set(portLines.map((l) => l.replace(/.*?\]\s*|.*?\b(wire|reg|logic)\s+/, '').search(/\w+/))).size === 1,
+    JSON.stringify(portLines));
   check('header-flush: closing `);` at column 0',
     lines.includes(');'), r.text);
   // Only the module body is indented.
@@ -511,9 +518,11 @@ console.log('=== SystemVerilog formatter tests ===');
   const eq = lines.map((l) => l.indexOf('='));
   check('assign-align: operators in one column',
     new Set(eq).size === 1, JSON.stringify(eq) + '\n' + r.text);
-  const semi = lines.map((l) => l.replace(/\s+$/, '').length);
-  check('assign-align: semicolons in one column',
-    new Set(semi).size === 1, JSON.stringify(semi) + '\n' + r.text);
+  // `ref.md` pads the terminator of declarations only; `assign` statements keep
+  // their `;` tight, so no padding may be inserted before it.
+  check('assign-align: no padding before `;`',
+    lines.every((l) => /;\s*$/.test(l) && !/ ;\s*$/.test(l)),
+    JSON.stringify(lines) + '\n' + r.text);
 }
 
 // 22. Instance ports align both `(` and `)`.
@@ -591,7 +600,7 @@ console.log('\n=== fragment formatting tests ===');
     '  end',
   ].join('\n') + '\n';
 
-  const r = formatFragment(frag, {});
+  const r = formatFragment(frag, {indentSize:2});
   console.log('\n[fragment-always]');
   check('fragment-always: no parse error', !r.hadError, r.text);
   check('fragment-always: base indent is 2 spaces', r.basePrefix === '  ', r.basePrefix);
@@ -602,7 +611,7 @@ console.log('\n=== fragment formatting tests ===');
   check('fragment-always: innermost body at base+4',
     /\n      cnt <= '0/.test(r.text), r.text);
   // Idempotent on the fragment.
-  const r2 = formatFragment(r.text, {});
+  const r2 = formatFragment(r.text, {indentSize:2});
   check('fragment-always: idempotent', r2.text === r.text,
     `--- 1st ---\n${r.text}\n--- 2nd ---\n${r2.text}`);
   // Lossless: same code tokens as input.
@@ -636,7 +645,7 @@ console.log('\n=== fragment formatting tests ===');
     '    assign valid_a = r_data;',
   ].join('\n') + '\n';
 
-  const r = formatFragment(frag, {});
+  const r = formatFragment(frag, {indentSize:2});
   console.log('\n[fragment-decls]');
   check('fragment-decls: no parse error', !r.hadError, r.text);
   check('fragment-decls: base indent is 4 spaces', r.basePrefix === '    ', r.basePrefix);
@@ -644,7 +653,7 @@ console.log('\n=== fragment formatting tests ===');
     /^    logic \[7:0\]\s+cnt/m.test(r.text), r.text);
   check('fragment-decls: assigns aligned',
     /^    assign o_data\s+= r_data;/m.test(r.text), r.text);
-  const r2 = formatFragment(r.text, {});
+  const r2 = formatFragment(r.text, {indentSize:2});
   check('fragment-decls: idempotent', r2.text === r.text,
     `--- 1st ---\n${r.text}\n--- 2nd ---\n${r2.text}`);
 }
@@ -662,8 +671,8 @@ console.log('\n=== fragment formatting tests ===');
 // 28. Fragment formatting: empty / whitespace-only selection is a no-op.
 {
   const { formatFragment, inferBaseIndent } = require('../src/fragment');
-  check('fragment-empty: base indent empty', inferBaseIndent('\n  \n', {}) === '', 'x');
-  const r = formatFragment('   \n\n  \n', {});
+  check('fragment-empty: base indent empty', inferBaseIndent('\n  \n', {indentSize:2}) === '', 'x');
+  const r = formatFragment('   \n\n  \n', {indentSize:2});
   check('fragment-empty: no error on blank input', !r.hadError, r.text);
 }
 
@@ -731,6 +740,398 @@ console.log('\n=== fragment formatting tests ===');
   const block = expandToBlock(src, aStart, bEnd);
   check('expand-to-block: cross-sibling grows to module',
     block && block.type === 'module_declaration', block && block.type);
+}
+
+// 32. CRLF input: the grammar gives `//`-comments and `define nodes their
+//     trailing CR, which used to emit a phantom blank line after every one of
+//     them (and made a second pass differ). Regression guard.
+{
+  const src = [
+    '// header',
+    '`define W 8',
+    'module crlf;',
+    '  // note',
+    '  wire [W-1:0] a;',
+    'endmodule',
+    '',
+  ].join('\r\n');
+  const r = runCase('crlf', src);
+  check('crlf: no blank after line comment', !/\n\n\s*\/\/ note/.test(r.text), r.text);
+  check('crlf: no blank after define', !/`define W 8\n\n/.test(r.text), r.text);
+  check('crlf: output is LF only', !r.text.includes('\r'), JSON.stringify(r.text));
+}
+
+// 33. Module header style: `(` stays on the module-name line when there is no
+//     parameter list, and `) (` joins when there is one.
+{
+  const src = [
+    'module no_params (input wire clk, output wire q);',
+    '  assign q = clk;',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('header-paren', src);
+  check('header-paren: open paren on module line',
+    r.text.startsWith('module no_params (\n'), r.text);
+
+  const withParams = [
+    'module with_params #(parameter int W = 8) (input wire clk);',
+    'endmodule',
+  ].join('\n');
+  const r2 = runCase('header-paren-params', withParams);
+  check('header-paren: ) ( between the two lists', r2.text.includes(') (\n'), r2.text);
+}
+
+// 34. `end else` stays on one line, including an `else if` chain.
+{
+  const src = [
+    'module els;',
+    'always_ff @(posedge clk) begin',
+    'if (a) begin',
+    'x <= 1;',
+    'end else if (b) begin',
+    'x <= 2;',
+    'end else begin',
+    'x <= 3;',
+    'end',
+    'end',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('else-join', src);
+  check('else-join: end else if', r.text.includes('end else if (b) begin'), r.text);
+  check('else-join: end else', r.text.includes('end else begin'), r.text);
+}
+
+// 35. modports keep their entries on separate lines.
+{
+  const src = [
+    'interface bus_if (input logic clk);',
+    '  modport master (',
+    '      output data,',
+    '      input  ready',
+    '  );',
+    'endinterface',
+  ].join('\n');
+  const r = runCase('modport', src);
+  check('modport: entries stay on their own lines',
+    r.text.includes('modport master (\n') && r.text.includes('output data,') &&
+    r.text.includes('input ready') && r.text.includes('\n);'),
+    r.text);
+}
+
+// 36. Preprocessor directives inside a port list: the file must still be
+//     formatted, with the directives put back on their own lines.
+{
+  const src = [
+    'module ifdef_ports (',
+    '    input  wire clk,',
+    '`ifdef WIDE',
+    '    input  wire [31:0] din,',
+    '`else',
+    '    input  wire [15:0] din,',
+    '`endif',
+    '    output wire        q',
+    ');',
+    '  assign q = clk;',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('ifdef-ports', src);
+  check('ifdef-ports: not rejected', r.hadError === false, String(r.hadError));
+  check('ifdef-ports: ifdef kept', r.text.includes('`ifdef WIDE'), r.text);
+  check('ifdef-ports: else kept', r.text.includes('`else'), r.text);
+  check('ifdef-ports: endif kept', r.text.includes('`endif'), r.text);
+  check('ifdef-ports: directive on its own line',
+    /^`ifdef WIDE$/m.test(r.text), r.text);
+}
+
+// 37. A generate block that the author wrote with `begin` must keep it; an
+//     implicit one must not gain a spurious begin/end.
+{
+  const explicit = [
+    'module g1;',
+    'genvar i;',
+    'generate',
+    'for (i = 0; i < 4; i = i + 1) begin',
+    'always @(posedge clk) q[i] <= d[i];',
+    'end',
+    'endgenerate',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('generate-begin', explicit);
+  check('generate: explicit begin kept', /\bfor \(.*\) begin\b/.test(r.text), r.text);
+
+  const implicit = [
+    'module g2;',
+    'genvar i;',
+    'generate',
+    'for (i = 0; i < 4; i = i + 1)',
+    'assign q[i] = d[i];',
+    'endgenerate',
+    'endmodule',
+  ].join('\n');
+  const r2 = runCase('generate-implicit', implicit);
+  check('generate: no spurious begin', !r2.text.includes('begin'), r2.text);
+}
+
+// 38. Operator spacing is normalised inside expressions, while ranges keep
+//     their tight form and unary operators are left alone.
+{
+  const src = [
+    'module sp;',
+    '  assign q=a+b;',
+    '  assign r=a[W-1:0]+1;',
+    '  always_ff @(posedge clk) begin',
+    '    z<=-1;',
+    '    for (i=0;i<8;i=i+1) y[i]<=i;',
+    '    if (a==b) w<=c;',
+    '  end',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('spacing', src);
+  check('spacing: assign spaced', /assign q = a \+ b\s*;/.test(r.text), r.text);
+  check('spacing: range untouched', r.text.includes('a[W-1:0] + 1'), r.text);
+  check('spacing: unary minus tight', r.text.includes('z <= -1;'), r.text);
+  check('spacing: for header spaced',
+    r.text.includes('for (i = 0; i < 8; i = i + 1)'), r.text);
+  check('spacing: comparison spaced', r.text.includes('if (a == b)'), r.text);
+}
+
+// 39. A `for` line must not drag the surrounding assignments out to its own
+//     operator column.
+{
+  const src = [
+    'module al;',
+    '  always_ff @(posedge clk) begin',
+    '    q<=cnt;',
+    '    for (i=0;i<8;i=i+1) z<=i;',
+    '    x=y;',
+    '  end',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('assign-align-ctrl', src);
+  const qLine = r.text.split('\n').find((l) => l.trim().startsWith('q <='));
+  check('assign-align-ctrl: short lhs not padded to the for line',
+    qLine && qLine.indexOf('<=') < 12, qLine);
+}
+
+// 40. Routine bodies: indentation is derived from nesting, nested loops close
+//     where they opened, and case labels stay on the `begin` line.
+{
+  const src = [
+    'module fn;',
+    '  function void f(int a);',
+    '    int t;',
+    '    for (int i = 0; i < 8 ; i++)begin',
+    '       for (int j = 0; j < 6 ; j++) begin',
+    '          y[i][j]=8\'h00;',
+    '       end',
+    '    end',
+    '    case (a)',
+    '      1: begin',
+    '        t = 1;',
+    '      end',
+    '      default: t = 0;',
+    '    endcase',
+    '  endfunction',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('routine-body', src);
+  check('routine-body: nested loop indented',
+    /\n {4}for \(int i = 0; i < 8; i\+\+\) begin\n {6}for \(int j = 0; j < 6; j\+\+\) begin\n {8}y\[i\]\[j\] = 8'h00;\n {6}end\n {4}end/.test(r.text),
+    r.text);
+  check('routine-body: case label inline', r.text.includes('1: begin'), r.text);
+  check('routine-body: function body indented',
+    /\n {4}int t;\n/.test(r.text), r.text);
+}
+
+// 41. Documentation above a port belongs to the port below it. A comment on its
+//     own line must not be bound to the previous port as a trailing comment,
+//     and it must not reset the alignment column either.
+{
+  const src = [
+    'module m (',
+    '//!Clock used by the CPU',
+    'input clk_cpu,',
+    '//! clock used by the data path',
+    'input clk_character,',
+    '//! frame sync',
+    'input sync_b,',
+    'output [3:0] q',
+    ');',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('port-doc-comments', src);
+  check('port-doc-comments: comment stays above its port',
+    /\/\/! clock used by the data path\ninput\s+clk_character,/.test(r.text), r.text);
+  check('port-doc-comments: no comment attached to the wrong port',
+    !/input\s+clk_cpu,\s*\/\//.test(r.text), r.text);
+  const names = r.text.split('\n').filter((l) => /^(?:input|output)\b/.test(l))
+    .map((l) => l.search(/[A-Za-z_]\w*(?:\s*,)?$/));
+  check('port-doc-comments: one name column across comments',
+    new Set(names).size === 1, JSON.stringify(names) + '\n' + r.text);
+}
+
+// 42. `ifdef in a port list: the directive does not start a new table, so the
+//     whole header keeps one set of columns.
+{
+  const src = [
+    'module m (',
+    'input a,',
+    '`ifdef WIDE',
+    'input [31:0] wide_d,',
+    '`endif',
+    'output b',
+    ');',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('port-ifdef-columns', src);
+  // Name column: the identifier just before `,` (or end of line).
+  const cols = r.text.split('\n').filter((l) => /^(?:input|output)\b/.test(l))
+    .map((l) => l.search(/[A-Za-z_]\w*(?:\s*,)?$/));
+  check('port-ifdef-columns: names share one column', new Set(cols).size === 1,
+    JSON.stringify(cols) + '\n' + r.text);
+  check('port-ifdef-columns: directive kept', /^`ifdef WIDE$/m.test(r.text), r.text);
+}
+
+// 43. A multi-entry parameter override is exploded like the port map, and the
+//     instance name with its `(` stays on the closing line.
+{
+  const src = [
+    'module t;',
+    '  sub #(.A(1), .B(2)) u_sub (',
+    '      .clk(clk)',
+    '  );',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('inst-param-explode', src);
+  check('inst-param-explode: one override per line',
+    /sub #\(\n\s+\.A\(1\),\n\s+\.B\(2\)\n\s+\) u_sub \(/.test(r.text), r.text);
+  // Only the override block, not the port map that follows `) u_sub (`.
+  const overrideBlock = r.text.split(') u_sub (')[0].split('\n').filter((l) => /^\s+\./.test(l));
+  const opens = overrideBlock.map((l) => l.indexOf('('));
+  check('inst-param-explode: overrides aligned on `(`', new Set(opens).size === 1,
+    JSON.stringify(opens) + '\n' + r.text);
+}
+
+// 44. A single short override stays inline.
+{
+  const src = ['module t;', '  sub #(.A(1)) u_sub (', '      .clk(clk)', '  );', 'endmodule'].join('\n');
+  const r = runCase('inst-param-inline', src);
+  check('inst-param-inline: lone override kept on the head line',
+    r.text.includes('sub #(.A(1)) u_sub ('), r.text);
+}
+
+// 45. `endmodule // name`: the trailer stays on the keyword line.
+{
+  const src = ['module t;', 'endmodule // u_thing'].join('\n');
+  const r = runCase('module-trailer', src);
+  check('module-trailer: comment kept on endmodule', /^endmodule \/\/ u_thing$/m.test(r.text), r.text);
+}
+
+// 46. Compact layout: one line per instance, columns aligned.
+{
+  const src = [
+    'module t;',
+    '  leaf u_a (.clk(clk), .rst_n(rst_n), .dout(d0));',
+    '  leaf u_bbb (.clk(clk), .rst_n(rst_n), .dout(d1));',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('inst-compact-basic', src, { instanceLayout: 'compact' });
+  const instLines = r.text.split('\n').filter((l) => l.includes('leaf '));
+  check('inst-compact-basic: one line per instance', instLines.length === 2, r.text);
+  check('inst-compact-basic: instance names padded to one column',
+    instLines[0].indexOf(' (') === instLines[1].indexOf(' ('),
+    JSON.stringify(instLines));
+  check('inst-compact-basic: no exploded port lines',
+    !/^\s+\.clk\(clk\),?$/m.test(r.text), r.text);
+}
+
+// 47. Compact layout: the k-th `.port(expr)` sits in the same column for every
+// instance in the group, so both `(` and `)` line up.
+{
+  const src = [
+    'module t;',
+    '  leaf u_a (.d(data_bus[7:0]), .q(q));',
+    '  leaf u_b (.d(d), .q(qq));',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('inst-compact-columns', src, { instanceLayout: 'compact' });
+  const instLines = r.text.split('\n').filter((l) => l.includes('leaf '));
+  const comma = instLines.map((l) => l.indexOf(', .q'));
+  const qOpen = instLines.map((l) => l.indexOf('(', l.indexOf('.q')));
+  const qClose = instLines.map((l) => l.lastIndexOf(')'));
+  check('inst-compact-columns: `.q` starts in one column', new Set(comma).size === 1,
+    JSON.stringify(comma) + '\n' + r.text);
+  check('inst-compact-columns: `.q(` paren aligned', new Set(qOpen).size === 1,
+    JSON.stringify(qOpen) + '\n' + r.text);
+  check('inst-compact-columns: closing paren aligned', new Set(qClose).size === 1,
+    JSON.stringify(qClose) + '\n' + r.text);
+}
+
+// 48. `auto`: small instances compact, wide ones explode.
+{
+  const src = [
+    'module t;',
+    '  leaf u_a (.clk(clk), .rst_n(rst_n), .dout(d0));',
+    '  big u_big (.a(1), .b(2), .c(3), .d(4), .e(5), .f(6));',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('inst-auto-threshold', src,
+    { instanceLayout: 'auto', compactInstanceMaxPorts: 4 });
+  check('inst-auto-threshold: 3-port instance stays on one line',
+    /leaf u_a +\(\.clk\(clk\), \.rst_n\(rst_n\), \.dout\(d0\)\);/.test(r.text), r.text);
+  check('inst-auto-threshold: 6-port instance explodes',
+    /big u_big \(\n\s+\.a\(1\),\n/.test(r.text), r.text);
+}
+
+// 49. A comment inside the port map forces the exploded layout: folding it onto
+// one line would swallow the comment.
+{
+  const src = [
+    'module t;',
+    '  leaf u_a (.clk(clk), // clock',
+    '            .rst_n(rst_n));',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('inst-compact-comment', src, { instanceLayout: 'compact' });
+  check('inst-compact-comment: comment still present',
+    r.text.includes('// clock'), r.text);
+  check('inst-compact-comment: fell back to one connection per line',
+    /\.clk\s*\(clk\s*\),?\n[\s\S]*\n\s+\.rst_n\(rst_n\)/.test(r.text), r.text);
+}
+
+// 50. Selection formatting: only the enclosing block is rewritten, and its
+// nesting depth is preserved from the fragment itself.
+{
+  const { formatFragment, expandToBlock } = require('../src/fragment');
+  const src = [
+    'module t;',
+    '  // keep this comment exactly as written',
+    '  always_comb begin',
+    '        x = a+b;',
+    '        y = c  &  d;',
+    '  end',
+    '  assign z = x;',
+    'endmodule',
+  ].join('\n');
+
+  const start = src.indexOf('always_comb');
+  const end = src.indexOf('end', src.indexOf('y = c')) + 3;
+  const block = expandToBlock(src, start, end);
+  check('selection: block expanded to the always_construct',
+    block && block.type === 'always_construct', block && block.type);
+
+  const lineStart = src.lastIndexOf('\n', block.start) + 1;
+  const lineEnd = src.indexOf('\n', block.end) + 1;
+  const { text } = formatFragment(src.slice(lineStart, lineEnd), { indentSize: 2 });
+  const spliced = src.slice(0, lineStart) + text + src.slice(lineEnd);
+
+  check('selection: body re-indented, base indent kept',
+    /\n {2}always_comb begin\n {4}x = a \+ b;\n {4}y = c & d;\n {2}end\n/.test(spliced),
+    spliced);
+  check('selection: text before the block untouched',
+    spliced.startsWith('module t;\n  // keep this comment exactly as written\n'), spliced);
+  check('selection: text after the block untouched',
+    spliced.endsWith('  assign z = x;\nendmodule'), spliced);
 }
 
 // ---------------------------------------------------------------- summary

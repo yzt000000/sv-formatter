@@ -37,6 +37,9 @@ node_modules/tree-sitter/binding.gyp
 .vscode-test/**
 samples/**
 test/**
+test_rtl/**
+test_rtl_fm/**
+demo/**
 tools/**
 # images/ is excluded above its icon: the marketplace listing needs icon.png.
 images/**
@@ -48,6 +51,12 @@ images/**
 **/.gitignore
 **/.gitattributes
 .gitignore
+
+# Scratch / local-only files
+ref.md
+debug.log
+.tmp/**
+.workbuddy/**
 
 # Build output of the previous package run
 *.vsix

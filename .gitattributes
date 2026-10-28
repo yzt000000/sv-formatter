@@ -1,0 +1,8 @@
+# Normalise to LF in the repository. The formatter's own regression tests care
+# about exact line endings, so mixed CRLF/LF checkouts would be noise.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.vsix binary
+*.node binary

@@ -1,35 +1,25 @@
 {
-  // SystemVerilog formatter — workspace scope.
-  // TerosHDL / verilog-hdl also register the `systemverilog` language id, so the
-  // default formatter has to be selected explicitly; VSCode will not pick this
-  // extension automatically.
+  // Route "Format Document" / "Format Selection" to this extension by default.
   "[systemverilog]": {
-    "editor.defaultFormatter": "local.sv-formatter",
-    "editor.formatOnSave": true,
-    "editor.formatOnPaste": false,
-    "editor.tabSize": 2,
-    "editor.insertSpaces": true,
-    "editor.trimAutoWhitespace": true
+    "editor.defaultFormatter": "yzt000000.sv-formatter"
   },
   "[verilog]": {
-    "editor.defaultFormatter": "local.sv-formatter"
+    "editor.defaultFormatter": "yzt000000.sv-formatter"
   },
 
-  // Formatter behaviour. See README for the full list.
-  "systemverilogFormatter.indentSize": 2,
-  "systemverilogFormatter.useTabs": false,
-  "systemverilogFormatter.explodePortList": true,
-  "systemverilogFormatter.explodeDeclarations": true,
-  "systemverilogFormatter.explodeInstancePorts": true,
-  "systemverilogFormatter.alignPortsInHeader": true,
-  "systemverilogFormatter.alignDeclarationTerminators": true,
-  "systemverilogFormatter.alignConsecutiveAssignments": true,
-  "systemverilogFormatter.alignConsecutiveDeclarations": true,
-  "systemverilogFormatter.spaceAroundBinaryOperators": true,
-  "systemverilogFormatter.spaceAfterComma": true,
-  "systemverilogFormatter.maxConsecutiveBlankLines": 1,
-  "systemverilogFormatter.ensureTrailingNewline": true,
-  // Keep this false so that a file with syntax errors is left untouched rather
-  // than rewritten by a formatter that could not fully understand it.
-  "systemverilogFormatter.formatOnParseError": false
+  // This workspace is the formatter's own corpus; force HD files onto the
+  // language ids the formatter registers so the test is unambiguous.
+  "files.associations": {
+    "*.v": "systemverilog",
+    "*.vh": "systemverilog",
+    "*.sv": "systemverilog",
+    "*.svh": "systemverilog"
+  },
+
+  // Off for testing: press Shift+Alt+F manually, so nothing reformats behind you.
+  "editor.formatOnSave": false,
+  "systemverilogFormatter.trace.server": "off",
+  "systemverilogFormatter.instanceLayout": "auto",
+  "systemverilogFormatter.compactInstanceMaxPorts": 4,
+  "systemverilogFormatter.indentSize": 4
 }

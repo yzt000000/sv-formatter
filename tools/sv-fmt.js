@@ -31,10 +31,15 @@ function parseArgs(argv) {
         process.exit(2);
       }
       const raw = argv[++i];
-      if (typeof DEFAULTS[key] === 'boolean') {
+      const def = DEFAULTS[key];
+      if (typeof def === 'boolean') {
         opts.config[key] = raw !== 'false' && raw !== '0';
-      } else {
+      } else if (typeof def === 'number') {
         opts.config[key] = Number(raw);
+      } else {
+        // enum-valued settings (`instanceLayout`) must stay strings; coercing
+        // them to Number made every such override silently become NaN.
+        opts.config[key] = raw;
       }
     } else opts.files.push(a);
   }
@@ -78,7 +83,10 @@ function main() {
       continue;
     }
 
-    if (result.text === src) continue;
+    // The engine emits LF, so a CRLF file must be compared with its line
+    // endings normalised — otherwise `--check` reports every Windows file as
+    // unformatted no matter how many times `-i` has run over it.
+    if (result.text === src.replace(/\r\n/g, '\n')) continue;
 
     if (opts.check) {
       unformatted++;

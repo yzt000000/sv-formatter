@@ -64,6 +64,8 @@ class Formatter {
     // Set by callers whose header line already ended (e.g. `always_ff @(..)`),
     // telling the next block to hang its `begin` on that header.
     this.hangBlock = false;
+    // Same for generate blocks: `if (g) begin` / `else begin`.
+    this.hangGenerate = false;
   }
 
   format() {
@@ -91,7 +93,16 @@ class Formatter {
 
   topLevel(node) {
     if (VERBATIM_ROOTS.has(node.type)) return this.verbatim(node);
-    if (isCommentNode(node)) return this.commentBlock(node);
+    if (isCommentNode(node)) {
+      // `endmodule // u_foo` / `endpackage // pkg` — the trailer documents the
+      // keyword it sits on, so it stays there instead of becoming a stray line
+      // that later reads as a comment on whatever follows.
+      if (this.prevEndIndex !== null &&
+          !/[\r\n]/.test(this.src.slice(this.prevEndIndex, node.startIndex))) {
+        return this.appendTrailingComment(node);
+      }
+      return this.commentBlock(node);
+    }
 
     switch (node.type) {
       case 'module_declaration':
@@ -140,11 +151,13 @@ class Formatter {
       case 'property_declaration':
       case 'sequence_declaration':
       case 'covergroup_declaration':
-      case 'modport_declaration':
       case 'clocking_declaration':
       case 'constraint_declaration':
       case 'interface_declaration_body':
         return this.blockDecl(node);
+
+      case 'modport_declaration':
+        return this.modportDeclaration(node);
 
       case 'checker_declaration':
       case 'genvar_declaration':
@@ -178,8 +191,7 @@ class Formatter {
       this.moduleHeader(header);
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
-        if (i > 0 && isCommentNode(item) &&
-            items[i - 1].endPosition.row === item.startPosition.row) {
+        if (i > 0 && isCommentNode(item) && this.sameSourceLine(items[i - 1], item)) {
           this.appendTrailingComment(item);
           continue;
         }
@@ -189,8 +201,7 @@ class Formatter {
       this.emit(this.text(items[0]), { indent: 0, group: 'header' });
       for (let i = 1; i < items.length; i++) {
         const item = items[i];
-        if (isCommentNode(item) &&
-            items[i - 1].endPosition.row === item.startPosition.row) {
+        if (i > 0 && isCommentNode(item) && this.sameSourceLine(items[i - 1], item)) {
           this.appendTrailingComment(item);
           continue;
         }
@@ -262,25 +273,39 @@ class Formatter {
         this.emit(') (', { indent: 0, group: 'param-close' });
       }
     } else {
-      // No parameter list: the port list opens right after the module name.
-      this.emit('(', { indent: 0, group: 'header-open' });
+      // No parameter list: the port list opens on the module-name line
+      // (`module align_demo (`), which is how the header reads in the style
+      // guide — the `(` is part of the signature, not a block opener.
+      this.emit('(', { indent: 0, group: 'header-open', joinPrev: true });
     }
 
     const realPorts = ports.filter((p) => !p.isComment && !p.isRaw);
+    // In an ANSI header `input a, b, c` is one declaration spread over several
+    // grammar nodes; the second and third arrive without a direction. Emitting
+    // them bare would change their meaning (a direction-less port is `inout`),
+    // so the previous declaration's prefix is carried over.
+    const ansi = portList.type === 'list_of_port_declarations';
+    let inherit = '';
     ports.forEach((p) => {
       if (p.isComment) {
-        this.emit(p.comment, { indent: 0, group: 'port' });
+        this.emit(p.comment, { indent: 0, group: 'port', kind: itemKind(p.comment) });
         return;
       }
       if (p.isRaw) {
         for (const seg of p.text.split(/\r\n|\r|\n/)) {
           const t = seg.trim();
-          if (t) this.emit(t, { indent: 0, group: 'port' });
+          if (t) this.emit(t, { indent: 0, group: 'port', kind: 'raw' });
         }
         return;
       }
       const idx = realPorts.indexOf(p);
-      const text = collapse(p.text);
+      let text = collapse(p.text);
+      if (ansi && /^[A-Za-z_$][\w$]*\s*$/.test(text.replace(/,$/, ''))) {
+        if (inherit) text = inherit + text;
+      } else if (ansi) {
+        const cols = declarationColumns(text);
+        if (cols && cols.dirEnd > 0) inherit = text.slice(0, cols.nameStart);
+      }
       const comma = p.isText ? '' : (idx === realPorts.length - 1 ? '' : ',');
       const cmt = p.comment ? ' ' + p.comment : '';
       this.emit(text + comma + cmt, { indent: 0, group: 'port' });
@@ -324,10 +349,12 @@ class Formatter {
       case 'property_declaration':
       case 'sequence_declaration':
       case 'covergroup_declaration':
-      case 'modport_declaration':
       case 'clocking_declaration':
       case 'constraint_declaration':
         return this.blockDecl(node);
+
+      case 'modport_declaration':
+        return this.modportDeclaration(node);
 
       case 'class_declaration':
         return this.classDeclaration(node);
@@ -345,6 +372,53 @@ class Formatter {
 
       default:
         return this.line(this.text(node));
+    }
+  }
+
+  /**
+   * `if (...) begin … end [else …]` at generate scope.
+   *
+   * Children appear in source order: condition, then-block, else-block or a
+   * nested if_generate_construct (else-if), interleaved with comments.
+   * Everything is walked in order so a comment between the branches —
+   * `end // block: foo` — is never dropped.
+   *
+   * `joinHead` requests that the `if (...)` head continue the previous line,
+   * which is how `else if (...)` stays on one line.
+   */
+  generateIf(node, joinHead) {
+    const kids = namedChildren(node);
+    let branch = 0;
+    let prev = null;
+    for (const k of kids) {
+      if (isCommentNode(k)) { this.commentInSequence(k, prev); continue; }
+      if (k.type === 'generate_block') {
+        const isElse = branch++ > 0;
+        // An `else` written as `else if (...)` arrives as an implicit block
+        // holding the nested if; unwrap it so the chain stays flat instead of
+        // turning into `else begin if … end`.
+        const chained = isElse ? implicitGenerateIf(k, this.src) : null;
+        if (chained) {
+          this.emit('else', { indent: this.indent, group: 'gen-head', joinPrev: this.prevLineIsEnd() });
+          this.generateIf(chained, true);
+          return;
+        }
+        if (isElse) {
+          this.emit('else', { indent: this.indent, group: 'gen-head', joinPrev: this.prevLineIsEnd() });
+        }
+        this.hangGenerate = true;
+        this.generate(k);
+      } else if (k.type === 'if_generate_construct') {
+        this.emit('else', { indent: this.indent, group: 'gen-head', joinPrev: this.prevLineIsEnd() });
+        this.generateIf(k, true);
+        return;
+      } else if (k.type === 'constant_expression' || k.type === 'expression') {
+        this.emit('if (' + collapse(this.text(k)) + ')',
+          { indent: this.indent, group: 'gen-head', joinPrev: !!joinHead });
+      } else {
+        this.generate(k);
+      }
+      prev = k;
     }
   }
 
@@ -372,24 +446,7 @@ class Formatter {
         return;
       }
       case 'if_generate_construct': {
-        // children: constant_expression (cond), generate_block (then [, else])
-        const kids = namedChildren(node);
-        const cond = kids.find((k) => k.type === 'constant_expression' || k.type === 'expression');
-        const blocks = kids.filter((k) => k.type === 'generate_block');
-        const elseIf = kids.find((k) => k.type === 'if_generate_construct');
-        if (cond) {
-          this.emit('if (' + collapse(this.text(cond)) + ')', { indent: this.indent, group: 'gen-head' });
-        } else {
-          this.emit('if', { indent: this.indent, group: 'gen-head' });
-        }
-        if (blocks[0]) this.generate(blocks[0]);
-        if (elseIf) {
-          this.emit('else', { indent: this.indent, group: 'gen-head' });
-          this.generate(elseIf);
-        } else if (blocks[1]) {
-          this.emit('else', { indent: this.indent, group: 'gen-head' });
-          this.generate(blocks[1]);
-        }
+        this.generateIf(node, false);
         return;
       }
       case 'loop_generate_construct': {
@@ -404,7 +461,7 @@ class Formatter {
         if (cond) parts.push(collapse(this.text(cond)));
         if (iter) parts.push(collapse(this.text(iter)));
         this.emit('for (' + parts.join('; ') + ')', { indent: this.indent, group: 'gen-head' });
-        if (block) this.generate(block);
+        if (block) { this.hangGenerate = true; this.generate(block); }
         return;
       }
       case 'generate_block': {
@@ -412,21 +469,30 @@ class Formatter {
         const kids = namedChildren(node);
         const nameNode = kids.find((k) => k.type === 'simple_identifier');
         const items = kids.filter((k) => k.type !== 'simple_identifier');
-        // A block without a name and with a single non-block item is often an
-        // implicit wrapper — inline its item to avoid spurious begin/end.
-        if (!nameNode && items.length === 1 && !BLOCK_NODE_TYPES.has(items[0].type)) {
-          this.moduleItem(items[0]);
+        const hang = this.hangGenerate;
+        this.hangGenerate = false;
+        // A block the author did not open with `begin` is a container only —
+        // walking into it must not invent a scope, otherwise `else if (...)` and
+        // a bare `generate if (...)` grow phantom `begin`/`end` pairs.
+        const implicit = !/^\s*begin\b/.test(this.src.slice(node.startIndex, node.endIndex));
+        if (implicit) {
+          for (const it of items) {
+            if (isCommentNode(it)) { this.commentInSequence(it, null); continue; }
+            this.moduleItem(it);
+          }
           return;
         }
         if (nameNode) {
-          this.emit('begin : ' + nameNode.text, { indent: this.indent, group: 'gen-block' });
+          this.emit('begin : ' + nameNode.text, { indent: this.indent, group: 'gen-block', joinPrev: hang });
         } else {
-          this.emit('begin', { indent: this.indent, group: 'gen-block' });
+          this.emit('begin', { indent: this.indent, group: 'gen-block', joinPrev: hang });
         }
         this.indent++;
+        let prev = null;
         for (const it of items) {
-          if (isCommentNode(it)) { this.commentBlock(it); continue; }
+          if (isCommentNode(it)) { this.commentInSequence(it, prev); continue; }
           this.moduleItem(it);
+          prev = it;
         }
         this.indent--;
         this.emit('end', { indent: this.indent, group: 'gen-block' });
@@ -451,40 +517,83 @@ class Formatter {
   /**
    * Module instantiation.
    *
-   * The port connection list is exploded one connection per line and kept
-   * aligned; collapsing a whole instance onto one line destroys the port map
-   * readability that matters most in RTL.
+   * Two layouts are available, chosen by `instanceLayout`:
+   *
+   *   explode — one connection per line, columns aligned. The right choice for
+   *             a port map of any size, and the default.
+   *   compact — the whole instance on one line, with the `.port(expr)` columns
+   *             of neighbouring instances of the same module aligned into a
+   *             table. Built for the "ten tiny three-port instances" case,
+   *             where exploding costs forty lines to say nothing.
+   *
+   * 'auto' picks compact up to `compactInstanceMaxPorts` connections. Any list
+   * carrying a comment or a preprocessor directive always explodes: folding it
+   * onto one line would drop or reorder what is written there.
    */
   instantiation(node) {
     const inst = firstChildOfType(node, ['hierarchical_instance', 'udp_instance']);
-    if (!inst || !this.cfg.explodeInstancePorts) {
+    if (!inst) {
       this.emit(this.text(node), { indent: this.indent, group: 'inst' });
       return;
     }
 
-    // `fifo #(...) u_fifo (` — everything up to the port list's `(`.
     const ports = portConnections(inst);
-    if (!ports.length) {
+    const layout = this.instanceLayout(ports);
+    if (layout === 'off' || !ports.length) {
       this.emit(this.text(node), { indent: this.indent, group: 'inst' });
       return;
     }
 
+    // `fifo #(...) u_fifo (` — first `(` at or after the instance name; the
+    // parameter list, if any, sits before it and is already behind us.
     const openParen = this.src.indexOf('(', inst.startIndex);
-    const headRaw = this.src.slice(node.startIndex, openParen + 1);
-    for (const seg of collapseHeadSegments(headRaw)) {
-      this.emit(seg, { indent: this.indent, group: 'inst-head' });
+    if (layout === 'compact' && this.compactInstance(node, inst, ports, openParen)) return;
+
+    const params = firstChildOfType(node, ['parameter_value_assignment']);
+    const paramItems = params ? paramAssignments(params) : [];
+    // A lone `.DEPTH(8)` reads better inline; anything longer (or documented
+    // with comments) gets one override per line, like the port map below it.
+    const explodeParams = params &&
+      (paramItems.filter((p) => !p.isComment).length > 1 || paramItems.some((p) => p.isComment));
+
+    if (explodeParams) {
+      // `mod #(.A(1), .B(2)) u_mod (`: explode the override list exactly like
+      // the port map. Folding it into the head turned a four-line override into
+      // one ~200-column line that also swallowed the instance name and the
+      // opening paren of the port list.
+      const head = collapse(this.src.slice(node.startIndex, params.startIndex)).replace(/\s+$/, '');
+      this.emit(head + ' #(', { indent: this.indent, group: 'inst-head' });
+      this.indent++;
+      paramItems.forEach((p, i) => {
+        const last = i === paramItems.length - 1;
+        let text = p.isComment ? p.text : collapse(p.text).replace(/\s+$/, '');
+        if (!p.isComment && !last) text += ',';
+        this.emit(text, {
+          indent: this.indent,
+          group: 'inst-port',
+          kind: p.isComment ? itemKind(p.text) : 'code',
+        });
+      });
+      this.indent--;
+      const tail = collapse(this.src.slice(params.endIndex, openParen + 1)).replace(/\s+$/, '');
+      this.emit(') ' + tail, { indent: this.indent, group: 'inst-tail' });
+    } else {
+      const headRaw = this.src.slice(node.startIndex, openParen + 1);
+      for (const seg of collapseHeadSegments(headRaw)) {
+        this.emit(seg, { indent: this.indent, group: 'inst-head' });
+      }
     }
 
     this.indent++;
     ports.forEach((p, i) => {
       if (p.comment && !p.text) {
-        this.emit(p.comment, { indent: this.indent, group: 'inst-port' });
+        this.emit(p.comment, { indent: this.indent, group: 'inst-port', kind: itemKind(p.comment) });
         return;
       }
       if (p.isRaw) {
         for (const seg of p.text.split(/\r\n|\r|\n/)) {
           const t = seg.trim();
-          if (t) this.emit(t, { indent: this.indent, group: 'inst-port' });
+          if (t) this.emit(t, { indent: this.indent, group: 'inst-port', kind: 'raw' });
         }
         return;
       }
@@ -495,6 +604,93 @@ class Formatter {
     });
     this.indent--;
     this.emit(');', { indent: this.indent, group: 'inst-tail' });
+  }
+
+  /**
+   * Which layout to use for this instance's port map.
+   *
+   * Kept as a method rather than inline so the rule lives in one place: the
+   * `compact` decision depends on the connection list, not on the node.
+   */
+  instanceLayout(ports) {
+    if (!this.cfg.explodeInstancePorts) return 'off';
+    const mode = this.cfg.instanceLayout;
+    if (mode === 'off') return 'off';
+    if (mode === 'explode') return 'explode';
+    // A comment or a directive between connections cannot survive being folded
+    // onto one line, so those lists always explode regardless of the setting.
+    if (ports.some((p) => p.comment || p.isRaw)) return 'explode';
+    if (mode === 'compact') return 'compact';
+    return ports.length <= this.cfg.compactInstanceMaxPorts ? 'compact' : 'explode';
+  }
+
+  /**
+   * Emit one instance on a single line and hand the pieces to the align pass.
+   *
+   * The canonical text written here has single spaces everywhere; `AlignPass`
+   * rebuilds it from the `compact` payload with the columns padded. Keeping the
+   * two steps apart is what makes the result idempotent — the emitter always
+   * starts from an unpadded form, so re-running cannot accumulate padding.
+   *
+   * Returns false when a connection does not fit the `.name(expr)` shape, so
+   * the caller can fall back to the exploded layout instead of guessing.
+   */
+  compactInstance(node, inst, ports, openParen) {
+    const items = [];
+    for (const p of ports) {
+      const part = splitPortConnection(collapse(p.text));
+      if (!part) return false;
+      items.push(part);
+    }
+
+    // Everything before the instance name: `mod`, or `mod #(...)`.
+    const prefix = collapse(this.src.slice(node.startIndex, inst.startIndex)).trim();
+    const name = collapse(this.src.slice(inst.startIndex, openParen)).trim();
+    if (!prefix || !name) return false;
+
+    const body = items
+      .map((it) => {
+        if (it.expr === null) return it.name;
+        return it.name + (it.paren ? '(' + it.expr + ')' : it.expr);
+      })
+      .join(', ');
+    this.emit(prefix + ' ' + name + ' (' + body + ');', {
+      indent: this.indent,
+      group: 'inst-compact',
+      compact: {
+        mod: prefix,
+        prefix,
+        name,
+        items,
+        // Which entries are `.name(...)` and which are positional. A group only
+        // mixes them safely if the shapes match, so it doubles as a group key.
+        sig: items.map((it) => (it.name ? 'n' : 'p')).join(''),
+        // Same module does not imply same port order; without this, two
+        // instances that list their ports differently would be aligned column
+        // by column and land on the wrong x position for every entry.
+        names: items.map((it) => it.name).join('|'),
+      },
+    });
+    return true;
+  }
+
+  /**
+   * modport master ( ... );
+   *
+   * The grammar exposes the port directions only as loose tokens, so the layout
+   * is preserved line for line: a one-line modport stays one line, a multi-line
+   * one keeps one entry per line and is re-indented as a block.
+   */
+  modportDeclaration(node) {
+    const lines = nodeLines(this.src.slice(node.startIndex, node.endIndex))
+      .map((ln) => ln.trim())
+      .filter(Boolean);
+    if (lines.length <= 1) return this.line(collapse(lines[0] || ''));
+    this.emit(collapse(lines[0]), { indent: this.indent, group: 'modport' });
+    for (const ln of lines.slice(1, -1)) {
+      this.emit(ln, { indent: this.indent + 1, group: 'modport' });
+    }
+    this.emit(collapse(lines[lines.length - 1]), { indent: this.indent, group: 'modport' });
   }
 
   /**
@@ -750,8 +946,7 @@ class Formatter {
     this.indent++;
     for (let i = 0; i < body.length; i++) {
       const k = body[i];
-      if (i > 0 && isCommentNode(k) &&
-          body[i - 1].endPosition.row === k.startPosition.row) {
+      if (i > 0 && isCommentNode(k) && this.sameSourceLine(body[i - 1], k)) {
         this.appendTrailingComment(k);
         continue;
       }
@@ -778,7 +973,13 @@ class Formatter {
         head = 'if' + (br.cond ? ' ' + br.cond : '');
       }
       if (br.comment) head += ' ' + br.comment.text.trim();
-      this.emit(head, { indent: this.indent, group: br.else ? 'else' : 'cond' });
+      // `end else begin` — the `else` of a completed block belongs on the
+      // `end` line; a dangling `begin` then hangs onto it as usual.
+      this.emit(head, {
+        indent: this.indent,
+        group: br.else ? 'else' : 'cond',
+        joinPrev: !!(br.else || br.elseIf) && this.prevLineIsEnd(),
+      });
       this.hangBlock = !br.comment;
       this.emitBody(br.stmt);
       this.hangBlock = false;
@@ -812,18 +1013,41 @@ class Formatter {
     const last = kids[kids.length - 1];
     const isDefault = node.type === 'default_case_item' ||
       (kids.length === 1 && /default/.test(this.text(node)));
+    const label = isDefault
+      ? 'default:'
+      : kids.slice(0, -1).map((k) => this.text(k)).join(', ') + ':';
 
-    if (isDefault) {
-      this.emit('default:', { indent: this.indent, group: 'case-label' });
-    } else {
-      const labels = kids.slice(0, -1).map((k) => this.text(k)).join(', ');
-      this.emit(labels + ':', { indent: this.indent, group: 'case-label' });
+    // A case item whose body is one simple statement stays on the label line —
+    // an encoding table is unreadable when every entry costs two lines.
+    const inline = this.inlineCaseBody(last, label);
+    if (inline !== null) {
+      this.emit(label + ' ' + inline, { indent: this.indent, group: 'case-item' });
+      return;
     }
+
+    this.emit(label, { indent: this.indent, group: 'case-label' });
 
     // Body: last named child is the statement.
     this.hangBlock = true;
     this.emitBody(last);
     this.hangBlock = false;
+  }
+
+  /**
+   * Text to append after a case label, or `null` when the body has to start on
+   * its own line (a block, a nested control construct, or just too long).
+   */
+  inlineCaseBody(stmt, label) {
+    if (!this.cfg.caseItemOnSameLine || !stmt) return null;
+    const inner = unwrapOne(stmt);
+    if (!inner || BLOCK_NODE_TYPES.has(inner.type)) return null;
+    const text = collapse(this.text(stmt)).replace(/\s*;$/, ';').trim();
+    if (!text || !/;$/.test(text)) return null;
+    if (splitBlockText(text) !== null) return null;
+    if (/^(if|for|foreach|while|repeat|forever|case|casex|casez|fork|begin)\b/.test(text)) return null;
+    const width = this.indent * this.cfg.indentSize + label.length + 1 + text.length;
+    if (this.cfg.maxLineLength && width > this.cfg.maxLineLength) return null;
+    return text;
   }
 
   loop(node) {
@@ -890,7 +1114,7 @@ class Formatter {
    * are reproduced as well, so macro regions keep their spacing.
    */
   verbatim(node) {
-    const lines = node.text.split(/\r\n|\r|\n/);
+    const lines = nodeLines(node.text);
     lines.forEach((ln, i) => {
       this.push(ln.replace(/\s+$/, ''), i === 0 ? this.indent : 0, 'raw', null);
     });
@@ -904,7 +1128,7 @@ class Formatter {
    * indentation (which would make formatting non-idempotent).
    */
   commentBlock(node) {
-    const lines = node.text.split(/\r\n|\r|\n/);
+    const lines = nodeLines(node.text);
     lines.forEach((ln, i) => {
       const text = ln.replace(/\s+$/, '');
       if (i === 0) {
@@ -933,6 +1157,45 @@ class Formatter {
   }
 
   // ------------------------------------------------------------- emitting
+
+  /**
+   * True when the previously emitted line is a block terminator (`end`,
+   * `endcase`, `endgenerate`, …). Used to keep `else` on the `end` line.
+   */
+  prevLineIsEnd() {
+    for (let i = this.lines.length - 1; i >= 0; i--) {
+      const ln = this.lines[i];
+      if (!ln.text) continue;
+      // A trailing `// …` owns the rest of the line: appending `else` there would
+      // push the keyword into the comment and silently break the code.
+      if (ln.text.includes('//')) return false;
+      return /^end[a-z_]*\b/.test(ln.text) && !ln.joinPrev;
+    }
+    return false;
+  }
+
+  /**
+   * Emit a comment that sits between two siblings: appended to the previous
+   * line when it shares that line in the source, otherwise on its own line.
+   */
+  commentInSequence(node, prev) {
+    if (prev && this.sameSourceLine(prev, node)) this.appendTrailingComment(node);
+    else this.commentBlock(node);
+  }
+
+  /**
+   * Do `prev` and `cur` share a source line?
+   *
+   * Row numbers alone are not enough: nodes such as `one_line_comment` and
+   * `` `define `` can swallow their line terminator, which bumps
+   * `endPosition.row` to the *next* line and used to glue a following comment
+   * onto the previous statement. Compare the actual gap text instead.
+   */
+  sameSourceLine(prev, cur) {
+    if (!prev || !cur) return false;
+    if (/[\r\n]$/.test(prev.text || '')) return false;
+    return !/[\r\n]/.test(this.src.slice(prev.endIndex, cur.startIndex));
+  }
 
   emit(text, opts = {}) {
     const t = collapse(text);
@@ -979,11 +1242,19 @@ class Formatter {
 
   push(text, indent, kind, opts) {
     const o = opts || {};
+    // Code lines get their operator spacing normalised here, before the
+    // alignment pass measures columns, so padded columns are computed from the
+    // final text. Raw (macro / directive) and comment lines pass through
+    // untouched.
+    if (kind === 'code') text = normalizeSpacing(text, this.cfg);
     this.lines.push({
       text,
       indent,
       kind,
       group: o.group || null,
+      // Structured payload for lines the align pass has to rebuild from parts
+      // rather than pad in place (compact instances).
+      compact: o.compact || null,
       // `joinPrev` glues this line onto the preceding one.
       joinPrev: !!o.joinPrev,
     });
@@ -1055,6 +1326,185 @@ const NEEDS_TERMINATOR = new Set([
 ]);
 
 // ==================================================================== utils
+
+/**
+ * Operator spacing.
+ *
+ * The tree gives us structure, not formatting, and most expressions arrive as
+ * raw source text — so `q<=cnt+1'b1;` would stay cramped. This normalises a
+ * single code line: one space on each side of a binary operator, one space after
+ * a comma.
+ *
+ * Deliberately conservative:
+ *   - index / part-select ranges (`[W-1:0]`) are copied untouched;
+ *   - string literals, `//` comments and directive lines are untouched;
+ *   - operators that are really punctuation (`::`, `++`, `--`, `**`, `->`, `.*`)
+ *     are copied as-is;
+ *   - an operator with no left operand (`(-1)`, `*ptr`) is unary and keeps its
+ *     tight spacing.
+ */
+const ATOMIC_OPS = ['<<<=', '>>>=', '::', '++', '--', '**', '->', '.*'];
+const BINARY_OPS = [
+  '<<<', '>>>', '<<=', '>>=', '===', '!==', '==?', '!=?',
+  '<<', '>>', '<=', '>=', '==', '!=', '&&', '||',
+  '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=',
+  '+', '-', '*', '/', '%', '&', '|', '^', '<', '>', '=', '?', ':',
+];
+const ALL_OPS = ATOMIC_OPS.concat(BINARY_OPS).sort((a, b) => b.length - a.length);
+const OPERAND_END = /[A-Za-z0-9_$'\]\)}]/;
+
+function normalizeSpacing(text, cfg) {
+  const wantOps = cfg.spaceAroundBinaryOperators !== false;
+  const wantComma = cfg.spaceAfterComma !== false;
+  if (!text || (!wantOps && !wantComma)) return text;
+  if (/^\s*`/.test(text)) return text;
+  if (!/[-+*/%&|^<>=!?:,]/.test(text)) return text;
+
+  const n = text.length;
+  let out = '';
+  let i = 0;
+  let bracket = 0;
+  // `?` open ternary levels. A `:` only separates expressions when one is
+  // pending; otherwise it terminates a case item label and stays tight.
+  let ternary = 0;
+
+  const lastReal = () => {
+    for (let k = out.length - 1; k >= 0; k--) {
+      if (out[k] !== ' ' && out[k] !== '\t') return out[k];
+    }
+    return '';
+  };
+  const nextReal = (from) => {
+    for (let k = from; k < n; k++) {
+      if (text[k] !== ' ' && text[k] !== '\t') return { ch: text[k], at: k };
+    }
+    return { ch: '', at: n };
+  };
+
+  while (i < n) {
+    const c = text[i];
+
+    if (c === '"') {                                   // string literal
+      out += c;
+      i++;
+      while (i < n) {
+        out += text[i];
+        if (text[i] === '\\' && i + 1 < n) { out += text[i + 1]; i += 2; continue; }
+        if (text[i] === '"') { i++; break; }
+        i++;
+      }
+      continue;
+    }
+    if (c === '/' && text[i + 1] === '/') { out += text.slice(i); break; }
+    if (c === '/' && text[i + 1] === '*') {
+      const end = text.indexOf('*/', i + 2);
+      if (end === -1) { out += text.slice(i); break; }
+      out += text.slice(i, end + 2);
+      i = end + 2;
+      continue;
+    }
+    if (c === '[') { bracket++; out += c; i++; continue; }
+    if (c === ']') { bracket = Math.max(0, bracket - 1); out += c; i++; continue; }
+
+    // Index and range contents keep the author's spacing.
+    if (bracket > 0) { out += c; i++; continue; }
+
+    if (wantComma && c === ',') {
+      out += c;
+      const nx = nextReal(i + 1);
+      if (nx.ch && !/[)\]};]/.test(nx.ch)) { out += ' '; i = nx.at; } else i++;
+      continue;
+    }
+
+    // `for (i = 0; i < 8; i = i + 1)` — one space after a statement separator,
+    // but a terminator at end of line stays bare.
+    if (c === ';') {
+      if (cfg.spaceBeforeSemicolon === false) {
+        while (out.endsWith(' ') || out.endsWith('\t')) out = out.slice(0, -1);
+      }
+      out += c;
+      const nx = nextReal(i + 1);
+      if (nx.ch && !/[;)\]}]/.test(nx.ch)) { out += ' '; i = nx.at; } else i++;
+      continue;
+    }
+
+    if (wantOps) {
+      let op = null;
+      for (const cand of ALL_OPS) {
+        if (text.startsWith(cand, i)) { op = cand; break; }
+      }
+      if (op) {
+        if (ATOMIC_OPS.includes(op)) { out += op; i += op.length; continue; }
+        if (op === '?') {
+          const nx = nextReal(i + 1);
+          while (out.endsWith(' ') || out.endsWith('\t')) out = out.slice(0, -1);
+          const prev = lastReal();
+          out += (prev && OPERAND_END.test(prev) ? ' ? ' : '? ');
+          ternary++;
+          i = nx.at;
+          continue;
+        }
+        if (op === ':') {
+          if (ternary === 0) {
+            // Case item label: `2'd0:` / `default:` — no space before the colon.
+            // A block label keeps its spacing: `begin : name`.
+            let head = out;
+            while (head.endsWith(' ') || head.endsWith('\t')) head = head.slice(0, -1);
+            if (/\bbegin$/.test(head)) {
+              const nx = nextReal(i + 1);
+              out = head + ' : ';
+              i = nx.at;
+              continue;
+            }
+            out = head + ':';
+            i += 1;
+            continue;
+          }
+          ternary--;
+          const nx = nextReal(i + 1);
+          while (out.endsWith(' ') || out.endsWith('\t')) out = out.slice(0, -1);
+          out += ' : ';
+          i = nx.at;
+          continue;
+        }
+        const nx = nextReal(i + op.length);
+        const prev = lastReal();
+        const binary = prev && OPERAND_END.test(prev) &&
+          nx.ch && !/[;,)\]}]/.test(nx.ch);
+        if (binary) {
+          while (out.endsWith(' ') || out.endsWith('\t')) out = out.slice(0, -1);
+          out += ' ' + op + ' ';
+          i = nx.at;
+          continue;
+        }
+        out += op;
+        i += op.length;
+        continue;
+      }
+    }
+
+    out += c;
+    i++;
+  }
+
+  return out.replace(/[ \t]+$/, '');
+}
+
+/**
+ * Split a node's text into lines.
+ *
+ * Some nodes swallow their line terminator: with CRLF input the grammar gives
+ * `one_line_comment` the text `// x\r`, and `` `define `` nodes the text
+ * `...\r\n`. A naive split then yields a trailing empty element, which used to
+ * emit a phantom blank line after every comment and every macro — and, since
+ * the output is LF-only, made the second format pass differ from the first.
+ * Trailing terminators are therefore dropped here.
+ */
+function nodeLines(text) {
+  return text
+    .replace(/(?:(?:\r\n|\r|\n)[ \t]*)+$/, '')
+    .split(/\r\n|\r|\n/);
+}
 
 function collapse(s) {
   if (!s) return '';
@@ -1189,8 +1639,16 @@ function firstChildOfType(node, types) {
 function portDeclarations(portList, src) {
   const found = [];
   const bindComment = (c) => {
-    if (found.length > 0 && !found[found.length - 1].isComment && !found[found.length - 1].comment) {
-      found[found.length - 1].comment = c.text.trim();
+    const prev = found.length ? found[found.length - 1] : null;
+    // A comment belongs to the item it trails only when it starts on the same
+    // source line. Port and connection lists are normally documented one
+    // comment per line *above* the entry; treating that as the previous entry's
+    // trailing comment shifts every comment up by one, so each port ends up
+    // carrying its neighbour's documentation.
+    const sameLine = prev && !prev.isComment && !prev.isRaw && !prev.comment &&
+      !/[\r\n]/.test(src.slice(prev.endIndex, c.startIndex));
+    if (sameLine) {
+      prev.comment = c.text.trim();
     } else {
       found.push({ startIndex: c.startIndex, endIndex: c.endIndex, text: '', comment: c.text.trim(), isComment: true });
     }
@@ -1257,6 +1715,22 @@ function isCommentNode(node) {
   return /^\s*(\/\/|\/\*)/.test(node.text || '');
 }
 
+/** Same test as `isCommentNode`, for a rendered line of text. */
+function isCommentText(text) {
+  return /^\s*(\/\/|\/\*)/.test(text || '');
+}
+
+/**
+ * Line kind for an entry of a port / connection list.
+ *
+ * `//@@svd-dir:N@@` is a preprocessor directive that was masked so the grammar
+ * could parse the list; it must behave like a directive, not like a comment, or
+ * the alignment would treat two alternative `ifdef` branches as one table.
+ */
+function itemKind(text) {
+  return /^\s*\/\/@@svd-dir:\d+@@/.test(text || '') ? 'raw' : 'code';
+}
+
 /**
  * Statement wrappers are three levels deep in this grammar
  * (statement -> statement_item -> <actual>), and bodies can also sit under
@@ -1288,29 +1762,92 @@ function unwrapOne(node) {
   return cur;
 }
 
+/**
+ * `else if (...)` is parsed as an `else` block with no `begin` in the source
+ * that holds one nested conditional generate construct. Return that construct
+ * so the else-if chain can be emitted flat, or `null` for a real block.
+ */
+function implicitGenerateIf(block, src) {
+  if (!src) return null;
+  if (/^\s*begin\b/.test(src.slice(block.startIndex, block.endIndex))) return null;
+  const kids = namedChildren(block);
+  if (kids.length !== 1) return null;
+  const only = kids[0];
+  if (only.type === 'conditional_generate_construct' || only.type === 'if_generate_construct') {
+    const inner = only.type === 'conditional_generate_construct'
+      ? namedChildren(only)[0]
+      : only;
+    return inner && inner.type === 'if_generate_construct' ? inner : null;
+  }
+  return null;
+}
+
 /** Split text into `head` / `body` / `tail` around the first block keyword. */
+/**
+ * Split `for (...) begin ... end` into header / body / terminator.
+ *
+ * The scan has to be nesting-aware: a `begin` inside the body opens a block
+ * whose `end` must not be mistaken for the loop's own terminator. Tracking the
+ * parenthesis depth alone was enough to miss that, which silently truncated the
+ * body of any loop containing an inner block (`for (...) begin ... for (...)
+ * begin ... end end`).
+ *
+ * The header keeps its opener keyword (`begin`, `fork`, …) so the caller can
+ * emit it as `for (...) begin` without re-deriving it.
+ */
 function splitBlockText(text) {
   const openers = ['begin', 'case', 'casex', 'casez', 'randcase', 'fork'];
   const closers = ['end', 'endcase', 'join', 'join_any', 'join_none'];
-  let i = 0, depth = 0, inStr = false;
+  let i = 0;
+  let pdepth = 0;
+  let nest = 0;
+  let inStr = false;
   let headEnd = -1;
+  let openerLen = 0;
+
   while (i < text.length) {
     const c = text[i];
-    if (inStr) { if (c === '\\') i++; else if (c === '"') inStr = false; i++; continue; }
+    if (inStr) {
+      if (c === '\\') i++;
+      else if (c === '"') inStr = false;
+      i++;
+      continue;
+    }
     if (c === '"') { inStr = true; i++; continue; }
-    if (c === '(' || c === '[' || c === '{') { depth++; i++; continue; }
-    if (c === ')' || c === ']' || c === '}') { depth--; i++; continue; }
-    if (depth === 0) {
+    if (c === '(' || c === '[' || c === '{') { pdepth++; i++; continue; }
+    if (c === ')' || c === ']' || c === '}') { pdepth--; i++; continue; }
+
+    // Only look at word starts at paren depth 0: `end` inside `f(end_x)` or
+    // inside `weekend` is not a terminator.
+    if (pdepth === 0 && /[A-Za-z_]/.test(c) && (i === 0 || !/[\w$]/.test(text[i - 1]))) {
       const rest = text.slice(i);
       const om = openers.map((o) => new RegExp('^' + o + '\\b').exec(rest)).find(Boolean);
-      if (om && headEnd < 0) { headEnd = i + om[0].length; i += om[0].length; continue; }
       const cm = closers.map((o) => new RegExp('^' + o + '\\b').exec(rest)).find(Boolean);
+
+      if (om && headEnd < 0) {
+        headEnd = i;
+        openerLen = om[0].length;
+        nest = 1;
+        i += om[0].length;
+        continue;
+      }
       if (cm) {
-        return {
-          head: collapse(text.slice(0, headEnd)),
-          body: text.slice(headEnd, i),
-          tail: collapse(text.slice(i)),
-        };
+        nest--;
+        if (nest <= 0) {
+          return {
+            head: (collapse(text.slice(0, headEnd)).replace(/\s*$/, '') + ' ' +
+              text.slice(headEnd, headEnd + openerLen)).trim(),
+            body: text.slice(headEnd + openerLen, i),
+            tail: collapse(text.slice(i)),
+          };
+        }
+        i += cm[0].length;
+        continue;
+      }
+      if (om) {
+        nest++;
+        i += om[0].length;
+        continue;
       }
     }
     i++;
@@ -1471,6 +2008,7 @@ class AlignPass {
     this.alignPorts(out);
     this.alignDeclarations(out);
     this.alignInstancePorts(out);
+    this.alignCompactInstances(out);
     this.alignAssignments(out);
     this.alignCaseLabels(out);
     return out;
@@ -1491,11 +2029,12 @@ class AlignPass {
    */
   alignPorts(lines) {
     if (!this.cfg.alignPortsInHeader) return;
+    const transparent = (l) => l.group === 'port' && (l.kind === 'raw' || isCommentText(l.text));
     for (let i = 0; i < lines.length;) {
       if (!isAlignableDecl(lines[i], 'port')) { i++; continue; }
-      const group = this.collectGroup(lines, i, (l) => isAlignableDecl(l, 'port'));
+      const group = this.collectGroup(lines, i, (l) => isAlignableDecl(l, 'port'), transparent);
       if (group.length > 1) this.alignDeclGroup(group);
-      i = group.length ? i + group.length : i + 1;
+      i = group.end > i ? group.end : i + 1;
     }
   }
 
@@ -1516,8 +2055,21 @@ class AlignPass {
     while (i < lines.length) {
       if (lines[i].group !== 'inst-port') { i++; continue; }
       let j = i;
-      while (j < lines.length && lines[j].group === 'inst-port') j++;
-      const group = lines.slice(i, j);
+      const group = [];
+      while (j < lines.length) {
+        const ln = lines[j];
+        if (ln.group !== 'inst-port') break;
+        // Banner comments (`/*AUTOINST*/`, `// Outputs`) sit inside the map but
+        // have no paren of their own, so they are skipped rather than ending the
+        // run. A preprocessor directive does end it: the branches it separates
+        // are alternative port maps, and letting one wide name in another branch
+        // (`.txrx_enablelinktest_reg`) set the column padded every short entry
+        // out by 60+ columns.
+        if (ln.kind === 'raw') break;
+        if (isCommentText(ln.text)) { j++; continue; }
+        group.push(ln);
+        j++;
+      }
 
       if (group.length > 1) {
         // Step 1: open paren.
@@ -1549,17 +2101,100 @@ class AlignPass {
           }
         }
       }
+      i = j > i ? j : i + 1;
+    }
+  }
+
+  /**
+   * Align compact instances into a table.
+   *
+   *   mod u_a  (.clk  (clk), .rst_n(rst_n), .dout(d0));
+   *   mod u_bb (.clk  (clk), .rst_n(rst_n), .dout(d1));
+   *
+   * Only a run of consecutive lines with the same module, the same connection
+   * count and the same indent forms a group. Those are the only lines whose
+   * k-th `.port(expr)` is the same port; padding a column across anything else
+   * would line up unrelated signals and read as noise.
+   */
+  alignCompactInstances(lines) {
+    for (let i = 0; i < lines.length;) {
+      const head = lines[i].compact;
+      if (lines[i].group !== 'inst-compact' || !head) { i++; continue; }
+      let j = i + 1;
+      while (j < lines.length) {
+        const ln = lines[j];
+        if (ln.group !== 'inst-compact' || !ln.compact) break;
+        if (ln.kind !== 'code' || ln.indent !== lines[i].indent) break;
+        if (ln.compact.mod !== head.mod) break;
+        if (ln.compact.items.length !== head.items.length) break;
+        if (ln.compact.sig !== head.sig) break;
+        if (ln.compact.names !== head.names) break;
+        j++;
+      }
+      this.rebuildCompactGroup(lines.slice(i, j));
       i = j;
+    }
+  }
+
+  /** Rebuild one group of compact instances with its columns padded. */
+  rebuildCompactGroup(group) {
+    const head = group[0].compact;
+    const cols = head.items.length;
+    const widest = (pick) => Math.max(...group.map((l) => pick(l.compact).length));
+
+    const wPrefix = widest((c) => c.prefix);
+    const wName = widest((c) => c.name);
+    const wPort = new Array(cols).fill(0);
+    const wExpr = new Array(cols).fill(0);
+
+    for (const l of group) {
+      for (let k = 0; k < cols; k++) {
+        const it = l.compact.items[k];
+        wPort[k] = Math.max(wPort[k], it.name.length);
+        if (it.expr !== null) wExpr[k] = Math.max(wExpr[k], it.expr.length);
+      }
+    }
+
+    // One wide expression in a column would push every other instance out by
+    // the difference; leave that column unpadded instead.
+    const cap = this.cfg.alignTerminatorMaxPad;
+    if (cap > 0) {
+      for (let k = 0; k < cols; k++) {
+        const lens = group.map((l) => (l.compact.items[k].expr || '').length);
+        if (Math.max(...lens) - Math.min(...lens) > cap) wExpr[k] = 0;
+      }
+    }
+
+    for (const l of group) {
+      const { prefix, name, items } = l.compact;
+      const parts = items.map((it, k) => {
+        let s = it.name;
+        if (s.length < wPort[k]) s += ' '.repeat(wPort[k] - s.length);
+        if (it.expr === null) return s;
+        if (!it.paren) {
+          // Ordered connection: the parentheses belong to the connection list,
+          // not to this entry, so there is nothing to align them against.
+          s += it.expr;
+          if (it.expr.length < wExpr[k]) s += ' '.repeat(wExpr[k] - it.expr.length);
+          return s;
+        }
+        s += '(' + it.expr;
+        if (it.expr.length < wExpr[k]) s += ' '.repeat(wExpr[k] - it.expr.length);
+        return s + ')';
+      });
+      l.text = prefix.padEnd(wPrefix) + ' ' + name.padEnd(wName) +
+        ' (' + parts.join(', ') + ');';
     }
   }
 
   alignDeclarations(lines) {
     if (!this.cfg.alignConsecutiveDeclarations) return;
+    const transparent = (l) => l.group === 'decl' && (l.kind === 'raw' || isCommentText(l.text));
     for (let i = 0; i < lines.length;) {
       if (!isAlignableDecl(lines[i], 'decl')) { i++; continue; }
-      const group = this.collectGroup(lines, i, (l) => isAlignableDecl(l, 'decl'));
+      const group = this.collectGroup(lines, i, (l) => isAlignableDecl(l, 'decl'), transparent);
       if (group.length > 1) this.alignDeclGroup(group);
-      i = group.length ? i + group.length : i + 1;
+      i = group.end > i ? group.end : i + 1;
     }
   }
 
@@ -1590,67 +2225,65 @@ class AlignPass {
     const parsed = group.map((l) => declarationColumns(l.text));
     if (parsed.some((p) => p === null)) return;
 
-    const hasDir = parsed.some((p) => p.dirEnd > 0);
-    const hasDim = parsed.some((p) => p.dimEnd > 0);
+    // Rebuild each line from its fields rather than nudging boundaries: a line
+    // that omits the type (`input [7:0] d`) or the packed width (`input clk`)
+    // still has to leave an empty slot of the group's width, otherwise the name
+    // column — the one `ref.md` actually asks for — ends up ragged.
+    const rows = group.map((l, i) => {
+      const c = parsed[i];
+      const t = l.text;
+      return {
+        dir: c.dirEnd > 0 ? t.slice(0, c.dirEnd).trim() : '',
+        type: c.typeEnd > 0 ? t.slice(c.dirEnd, c.typeEnd).trim() : '',
+        dim: c.dimEnd > 0 ? t.slice(c.dimStart, c.dimEnd).trim() : '',
+        name: t.slice(c.nameStart, c.nameEnd).trim(),
+        // The gap before `,` / `;` disappears (the name column supplies it), but
+        // the gap before `=` is content: `localparam int P = 1;` must not become
+        // `P= 1;`.
+        tail: /^[ \t]*[,;]/.test(t.slice(c.nameEnd))
+          ? t.slice(c.nameEnd).replace(/^[ \t]+/, '')
+          : (' ' + t.slice(c.nameEnd).trim()).replace(/[ \t]+$/, ''),
+      };
+    });
+    const width = (k) => Math.max(...rows.map((r) => r[k].length));
+    const wDir = width('dir'), wType = width('type'), wDim = width('dim'), wName = width('name');
 
-    // Widest form of each column. The type column starts one space after the
-    // widest direction, the dimension column one space after the widest type, and
-    // the signal name one space after the widest dimension.
-    const colDir = hasDir ? Math.max(...parsed.map((p) => p.dirEnd)) : 0;
-    const colType = Math.max(...parsed.map((p) => p.typeEnd)) + (hasDir ? 1 : 0);
-    const dimWidth = hasDim
-      ? Math.max(...parsed.map((p) => (p.dimEnd > 0 ? p.dimEnd - p.dimStart : 0)))
-      : 0;
-    const colDim = hasDim ? colType + dimWidth : colType;
-    const colName = colDim + 1;
-    const longestName = Math.max(...parsed.map((p) => p.nameEnd - p.nameStart));
-    const colEnd = this.cfg.alignDeclarationTerminators ? colName + longestName : 0;
-
-    for (let k = 0; k < group.length; k++) {
-      const c = parsed[k];
-      // Boundaries as [sourceOffset, targetOffset]. A line without a packed
-      // width has no dimension boundary, so its type boundary is pushed all the
-      // way to the name column instead.
-      const b = [];
-      if (hasDir && c.dirEnd > 0) b.push([c.dirEnd, colDir]);
-      if (c.typeEnd > 0 && c.typeEnd !== c.nameStart) {
-        b.push(hasDim && c.dimEnd === 0
-          ? [c.typeEnd, colName - 1]
-          : [c.typeEnd, colType]);
-      }
-      if (hasDim && c.dimEnd > 0) b.push([c.dimEnd, colDim]);
-      b.push([c.nameStart, colName]);
-      if (colEnd) b.push([c.nameEnd, colEnd]);
-
-      let out = group[k].text;
-      let shift = 0;
-      for (const [at, want] of b) {
-        const pad = want - (at + shift);
-        if (pad > 0) {
-          out = out.slice(0, at + shift) + ' '.repeat(pad) + out.slice(at + shift);
-          shift += pad;
-        }
-      }
+    for (let k = 0; k < rows.length; k++) {
+      const r = rows[k];
+      let out = '';
+      if (wDir) out += r.dir.padEnd(wDir) + ' ';
+      if (wType) out += r.type.padEnd(wType) + ' ';
+      if (wDim) out += r.dim.padEnd(wDim) + ' ';
+      out += r.name.padEnd(wName) + r.tail;
       group[k].text = out;
     }
   }
+
   /**
    * Collect a run of consecutive lines matching `predicate`.
    *
    * `predicate` receives the whole line object, not just its text, because
    * callers also need the `group` tag to decide what kind of line this is.
-   * A blank line, a comment or a non-matching line ends the run.
+   *
+   * `transparent` (optional) names lines that neither join the group nor end
+   * it: a `//!` comment above a port, or an `` `ifdef `` inside the list. Those
+   * lines carry no columns of their own, but the ports on either side of them
+   * still belong to the same table — cutting the run there is what makes a
+   * documented port list come out with three different name columns.
+   *
+   * The returned array carries `.end`, the index just past the run, so callers
+   * can resume scanning after the lines that were skipped over.
    */
-  collectGroup(lines, from, predicate) {
+  collectGroup(lines, from, predicate, transparent) {
     const group = [];
     let i = from;
     while (i < lines.length) {
       const ln = lines[i];
-      if (ln.kind !== 'code') break;
-      if (!predicate(ln)) break;
-      group.push(ln);
-      i++;
+      if (predicate(ln)) { group.push(ln); i++; continue; }
+      if (ln.kind !== 'blank' && transparent && transparent(ln)) { i++; continue; }
+      break;
     }
+    group.end = i;
     return group;
   }
 
@@ -1667,13 +2300,22 @@ class AlignPass {
    */
   alignAssignments(lines) {
     if (!this.cfg.alignConsecutiveAssignments) return;
+    // A comment line between two assignments documents one of them; cutting the
+    // run there would leave every parameter list that is documented per line
+    // with its `=` in a different column per entry.
+    const transparent = (l) => l.kind === 'raw' || isCommentText(l.text);
     let i = 0;
     while (i < lines.length) {
       if (!this.isAssignable(lines[i])) { i++; continue; }
       let j = i;
-      while (j < lines.length && this.isAssignable(lines[j])) j++;
-      if (j - i > 1) this.alignAssignGroup(lines.slice(i, j));
-      i = j;
+      const members = [];
+      while (j < lines.length) {
+        if (this.isAssignable(lines[j])) { members.push(lines[j]); j++; continue; }
+        if (lines[j].kind !== 'blank' && transparent(lines[j])) { j++; continue; }
+        break;
+      }
+      if (members.length > 1) this.alignAssignGroup(members);
+      i = j > i ? j : i + 1;
     }
   }
 
@@ -1694,14 +2336,24 @@ class AlignPass {
     }
 
     // Step 2: align the trailing `;` (or `,` where the statement continues).
+    //
+    // Only declarations take part: `ref.md` pads the terminator of `wire`/
+    // `logic`/`localparam` lines but leaves `assign x = y;` tight. It also keeps
+    // a one-line-first rule — a 300-column concatenation in the same group must
+    // not drag every short statement's `;` out to its column.
     if (!this.cfg.alignDeclarationTerminators) return;
+    const maxPad = Math.max(0, Number(this.cfg.alignTerminatorMaxPad) || 0);
     const ends = group.map((l) => {
+      if (!isDeclarationLine(l.text)) return -1;
       const t = l.text.replace(/\s+$/, '');
-      return /[;,]$/.test(t) ? t.length - 1 : -1;
+      return /[;,]/.test(t.slice(-1)) ? t.length - 1 : -1;
     });
-    if (!ends.every((e) => e >= 0)) return;
-    const endTarget = Math.max(...ends);
+    const used = ends.filter((e) => e >= 0);
+    if (used.length < 2) return;
+    const endTarget = Math.max(...used);
+    if (maxPad && endTarget - Math.min(...used) > maxPad) return;
     for (let k = 0; k < group.length; k++) {
+      if (ends[k] < 0) continue;
       const pad = endTarget - ends[k];
       if (pad > 0) {
         const ln = group[k];
@@ -1712,7 +2364,16 @@ class AlignPass {
 
   isAssignable(ln) {
     if (ln.kind !== 'code') return false;
-    if (/^(begin|end|else|endcase|case)\b/.test(ln.text)) return false;
+    // Control constructs carry assignments in their header (`for (i = 0; …)`) or
+    // in an unblocked body (`if (x) y = 1;`). Aligning those would drag every
+    // neighbouring statement out to the header's operator column.
+    if (/^(begin|end|else|endcase|case|casex|casez|randcase|for|foreach|while|repeat|forever|if|always\w*|initial|final|generate|endgenerate)\b/.test(ln.text)) {
+      return false;
+    }
+    // Case items are excluded too: `default:` is wider than `9'h003:`, so a
+    // single `default` in a decode table would shift every other item's operator
+    // by one column for no reason.
+    if (CASE_ITEM_LINE.test(ln.text)) return false;
     return assignmentColumn(ln.text) > 0;
   }
 
@@ -1786,6 +2447,33 @@ function assignmentColumn(text) {
   return -1;
 }
 
+/**
+ * A case item whose body sits on the label line: `2'd0: x = 1'b1;`. The label
+ * may be `default`, a literal / identifier list, or a concatenation.
+ */
+const CASE_ITEM_LINE = /^\s*(?:default|\{[^}]*\}|[A-Za-z0-9_'$.]+(?:\s*,\s*(?:\{[^}]*\}|[A-Za-z0-9_'$.]+))*):\s/;
+
+const DECL_KEYWORDS = new Set([
+  'wire', 'uwire', 'tri', 'tri0', 'tri1', 'wand', 'wor', 'supply0', 'supply1',
+  'reg', 'logic', 'bit', 'byte', 'shortint', 'int', 'longint', 'integer',
+  'real', 'shortreal', 'realtime', 'time', 'genvar', 'event', 'string',
+  'chandle', 'parameter', 'localparam', 'input', 'output', 'inout', 'ref',
+  'typedef', 'enum', 'struct', 'union', 'var', 'const', 'static', 'automatic',
+]);
+
+/** Does this line read as a net/variable/parameter declaration? */
+function isDeclarationLine(text) {
+  const m = /^(\s*)([A-Za-z_$][\w$]*)/.exec(text);
+  if (!m) return false;
+  if (DECL_KEYWORDS.has(m[2])) return true;
+  // `logic signed [15:0] x;` — a qualifier may precede the type keyword.
+  if (m[2] === 'signed' || m[2] === 'unsigned') {
+    const n = /^\s*[A-Za-z_$][\w$]*\s+([A-Za-z_$][\w$]*)/.exec(text);
+    return !!n && DECL_KEYWORDS.has(n[1]);
+  }
+  return false;
+}
+
 /** `<=` is an assignment unless it is the tail of a relational compare. */
 function isAssignCtx(text, i) {
   const prev = text[i - 1];
@@ -1793,7 +2481,86 @@ function isAssignCtx(text, i) {
 }
 
 function format(source, config) {
-  return new Formatter(source, config).format();
+  const direct = new Formatter(source, config).format();
+  if (!direct.hadError) return direct;
+
+  // The grammar cannot parse a preprocessor directive that sits *inside* a
+  // port list or an instantiation connection list — yet real RTL uses
+  //
+  //     .data (`ifdef WIDE (wide_data) `else (narrow_data) `endif)
+  //
+  // constantly. Mask those directives to same-line comments, format the file,
+  // then splice the directives back. Only done when the direct parse failed, so
+  // a file that parses is never reformatted through the masking path.
+  const masked = maskDirectivesInParens(source);
+  if (!masked.map.length) return direct;
+
+  const result = new Formatter(masked.text, config).format();
+  if (result.hadError) return direct;
+  return { text: restoreDirectives(result.text, masked.map), hadError: false };
+}
+
+const DIRECTIVE_RE = /^\s*`(?:ifdef|ifndef|elsif|else|endif)\b/;
+
+/**
+ * Replace directives that appear inside parentheses with marker comments.
+ *
+ * Returns the rewritten source plus the table needed to restore them.
+ */
+function maskDirectivesInParens(src) {
+  const masked = maskLiteralsAndComments(src);
+  const srcLines = src.split(/(?<=\n)/);
+  const maskLines = masked.split(/(?<=\n)/);
+  const map = [];
+  let depth = 0;
+
+  const out = srcLines.map((line, i) => {
+    const startDepth = depth;
+    for (const ch of (maskLines[i] || '')) {
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+    }
+    if (startDepth <= 0 || !DIRECTIVE_RE.test(line)) return line;
+    const indent = line.match(/^\s*/)[0];
+    const eol = /\r?\n$/.exec(line);
+    const marker = `//@@svd-dir:${map.length}@@`;
+    map.push(line.trim());
+    return indent + marker + (eol ? eol[0] : '');
+  });
+
+  return { text: out.join(''), map };
+}
+
+/**
+ * Put masked directives back.
+ *
+ * A marker that survived as a line of its own is replaced in place. A marker
+ * the layout attached as a trailing comment (`sysref, //@@svd-dir:7@@`) is
+ * lifted onto its own line right after that line, which is where the directive
+ * stood in the source. Directives are line-oriented, so keeping them alone on a
+ * line is what makes the result both valid and stable across repeated runs.
+ */
+function restoreDirectives(text, map) {
+  const out = [];
+  for (const line of text.split('\n')) {
+    const alone = /^(\s*)\/\/@@svd-dir:(\d+)@@\s*$/.exec(line);
+    if (alone) {
+      out.push(alone[1] + map[Number(alone[2])]);
+      continue;
+    }
+    if (!line.includes('@@svd-dir:')) {
+      out.push(line);
+      continue;
+    }
+    const indent = line.match(/^\s*/)[0];
+    const dirs = [];
+    const rest = line
+      .replace(/\/\/@@svd-dir:(\d+)@@/g, (_, d) => { dirs.push(map[Number(d)]); return ''; })
+      .replace(/\s+$/, '');
+    if (rest.trim()) out.push(rest);
+    for (const d of dirs) out.push(indent + d);
+  }
+  return out.join('\n');
 }
 
 /**
@@ -1930,6 +2697,28 @@ function declarationPrefixLength(text) {
 }
 
 /**
+ * Parameter overrides of an instantiation, in source order.
+ *
+ * `#(/*AUTOINSTPARAM* / // Parameters .A(1), .B(2))` ->
+ *   [{comment, '/*AUTOINSTPARAM* /'}, {comment, '// Parameters'},
+ *    {'.A(1)'}, {'.B(2)'}]
+ * Comments stay in the list so the `/*AUTOINSTPARAM* /` banner and the group
+ * comments inside a parameter block keep their position.
+ */
+function paramAssignments(params) {
+  const found = [];
+  const walk = (n) => {
+    for (const c of namedChildren(n)) {
+      if (isCommentNode(c)) { found.push({ text: c.text.trim(), isComment: true }); continue; }
+      if (c.type === 'list_of_parameter_value_assignments') { walk(c); continue; }
+      found.push({ text: c.text, isComment: false });
+    }
+  };
+  walk(params);
+  return found;
+}
+
+/**
  * Individual port connections of an instantiation, in source order.
  *
  * `fifo u (.a(x), .b(y))` -> ['.a(x)', '.b(y)']
@@ -1962,6 +2751,43 @@ function portConnections(inst) {
   walk(inst, 0);
   if (found.length) return found.sort((a, b) => a.startIndex - b.startIndex);
   return [];
+}
+
+/**
+ * Split one port connection into the pieces the compact layout aligns.
+ *
+ *   .clk(clk)  -> { name: '.clk', expr: 'clk',  paren: true  }
+ *   .clk       -> { name: '.clk', expr: null,   paren: false }  (same-name)
+ *   .*         -> { name: '.*',   expr: null,   paren: false }
+ *   (clk)      -> { name: '',     expr: 'clk',  paren: true  }  (ordered)
+ *   clk        -> { name: '',     expr: 'clk',  paren: false }  (ordered, the
+ *                  grammar hands these back without the list's parentheses)
+ *
+ * Returns null for anything it cannot reproduce exactly, which makes the caller
+ * fall back to the exploded layout instead of emitting a guess.
+ */
+function splitPortConnection(text) {
+  const s = String(text).trim();
+  if (!s) return null;
+
+  if (s.startsWith('.')) {
+    const m = /^(\.\s*[A-Za-z_][\w$]*|\.\*)\s*(?:\(([\s\S]*)\))?$/.exec(s);
+    if (!m) return null;
+    return {
+      name: m[1].replace(/\s+/g, ''),
+      expr: m[2] === undefined ? null : collapse(m[2]).trim(),
+      paren: m[2] !== undefined,
+    };
+  }
+  if (s.startsWith('(') && s.endsWith(')')) {
+    return { name: '', expr: collapse(s.slice(1, -1)).trim(), paren: true };
+  }
+  // A bare ordered connection. Reject anything with a top-level `,` — that is a
+  // sign the grammar grouped more than one connection here.
+  if (!s.includes(',')) {
+    return { name: '', expr: collapse(s).trim(), paren: false };
+  }
+  return null;
 }
 
 /**
@@ -2108,8 +2934,16 @@ const TYPE_KEYWORDS = new Set([
 function parameterDeclarations(paramList, src) {
   const found = [];
   const bindComment = (c) => {
-    if (found.length > 0 && !found[found.length - 1].isComment && !found[found.length - 1].comment) {
-      found[found.length - 1].comment = c.text.trim();
+    const prev = found.length ? found[found.length - 1] : null;
+    // A comment belongs to the item it trails only when it starts on the same
+    // source line. Port and connection lists are normally documented one
+    // comment per line *above* the entry; treating that as the previous entry's
+    // trailing comment shifts every comment up by one, so each port ends up
+    // carrying its neighbour's documentation.
+    const sameLine = prev && !prev.isComment && !prev.isRaw && !prev.comment &&
+      !/[\r\n]/.test(src.slice(prev.endIndex, c.startIndex));
+    if (sameLine) {
+      prev.comment = c.text.trim();
     } else {
       found.push({ startIndex: c.startIndex, endIndex: c.endIndex, text: '', comment: c.text.trim(), isComment: true });
     }
