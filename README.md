@@ -491,15 +491,16 @@ UVM 类与方法、多声明符、tab 缩进、空输入、语法错误代码、
 
 ### 语料回归
 
-`test_rtl/` 里是 80 份真实 JESD204B RTL，可整体跑通并检查幂等与无损：
+仓库**不自带**语料——真实 RTL 属于各自的内部资产，不适合随插件分发。把任意目录指给工具即可整体跑一遍：
 
 ```bash
-node tools/fmt-corpus.js              # 输出到 test_rtl_fm/
-node tools/fmt-corpus.js --indent=2   # 换成 2 空格缩进
+node tools/fmt-corpus.js --src=../my_rtl            # 输出到 ../my_rtl_fm/
+node tools/fmt-corpus.js --src=../my_rtl --indent=2 # 换成 2 空格缩进
 ```
 
 每份文件都会校验：无令牌丢失、`begin/end` 计数不变、格式化后仍可解析、
-尾随空白为 0、二次格式化结果一致。
+尾随空白为 0、二次格式化结果一致。解析不了的文件**原样拷贝**并在报告里列为跳过，
+不会出现半格式化。源目录与 `_fm` 输出目录都在 `.gitignore` 里。
 
 ## 命令行
 
@@ -548,12 +549,11 @@ src/
   config.js      配置默认值与归一化
 tools/
   sv-fmt.js      CLI，用于 CI 格式检查
-  fmt-corpus.js  语料回归：整体格式化 test_rtl/ 并写报告
+  fmt-corpus.js  语料回归：整体格式化指定目录（--src）并写报告
 test/
   run-tests.js   断言测试套件（409 条）
   activate-smoke.js  桩件跑 activate()，校验 provider / 命令注册与选区编辑
-test_rtl/        80 份真实 JESD204B RTL，语料回归输入
-demo/            手动试用的代表文件（不动 test_rtl 的基线）
+demo/            手动试用的代表文件
 ```
 
 核心引擎不依赖 `vscode` 模块，可在 Node 中独立调用。

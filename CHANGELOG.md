@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- 仓库不再包含 `test_rtl/` 语料（80 份 JESD204B RTL，1.4 MB）。它是本地回归输入，
+  不属于插件的一部分——从未打进 vsix。`tools/fmt-corpus.js` 改为 `--src=<目录>` 指定
+  任意语料，缺目录时给出明确提示而不是抛 `ENOENT`；`test_rtl/` 与其 `_fm` 输出一并进
+  `.gitignore`，本地放一份不会被误提交。`npm test` 不依赖语料，409 条断言照常通过。
 - 关于 `` `ifdef `` 的文档表述与实际行为对齐：**指令独占一行**时三种布局都正常（自动 explode、
   指令原位保留）；**指令与连接内容写在同一行**时（`.a (`ifdef W x `else y `endif)`）
   整篇与选区都按语法错误跳过——这是预处理器的限制，不是格式化器能修的。

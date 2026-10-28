@@ -3,8 +3,10 @@ node_modules/
 .vscode-test/
 *.log
 
-# Formatted corpus output (regenerate with tools/fmt-corpus.js)
-test_rtl_fm/
+# Corpus for tools/fmt-corpus.js. Not shipped: point the tool at your own RTL
+# (a local test_rtl/ stays ignored so it never gets committed again).
+test_rtl/
+*_fm/
 
 # Scratch space for manual formatter experiments
 .tmp/
