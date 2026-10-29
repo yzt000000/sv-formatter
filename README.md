@@ -1,4 +1,4 @@
-# SystemVerilog Formatter for VSCode
+# SVF — SystemVerilog Formatter for VSCode
 
 基于 [tree-sitter-systemverilog](https://github.com/gmlarumbe/tree-sitter-systemverilog)（IEEE 1800-2023 完整语法）实现的 SystemVerilog 格式化插件。
 
@@ -275,7 +275,7 @@ code --install-extension sv-formatter-0.6.2.vsix
 
 ```json
 "[systemverilog]": {
-  "editor.defaultFormatter": "yzt000000.sv-formatter",
+  "editor.defaultFormatter": "WenjieFan.sv-formatter",
   "editor.formatOnSave": true
 }
 ```
@@ -285,14 +285,14 @@ code --install-extension sv-formatter-0.6.2.vsix
 ```json
 {
   "[systemverilog]": {
-    "editor.defaultFormatter": "yzt000000.sv-formatter",
+    "editor.defaultFormatter": "WenjieFan.sv-formatter",
     "editor.formatOnSave": true
   }
 }
 ```
 
 也可以用命令面板 `Format Document With...` 手动选择
-`SystemVerilog Formatter` —— 输出的选择项名称即为该插件。
+`SVF — SystemVerilog Formatter` —— 输出的选择项名称即为该插件。
 
 > 语言 ID 是多个扩展共享的，语法高亮会叠加；但 **defaultFormatter 是单选的**，
 > 所以必须显式指定，否则走的是其他扩展的 formatter。

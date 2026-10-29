@@ -1,9 +1,9 @@
 {
   "name": "sv-formatter",
-  "displayName": "SystemVerilog Formatter",
+  "displayName": "SVF — SystemVerilog Formatter",
   "description": "Structure-driven SystemVerilog formatter: indentation derived from the parse tree, column alignment, macro-safe, and idempotent.",
   "version": "0.6.2",
-  "publisher": "yzt000000",
+  "publisher": "WenjieFan",
   "license": "MIT",
   "icon": "images/icon.png",
   "repository": {
