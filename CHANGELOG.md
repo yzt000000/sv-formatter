@@ -5,6 +5,15 @@ All notable changes to this extension are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.3] - 2026-11-01
+
+### Changed
+
+- **Visual Studio Code Marketplace 首次上架。** 与 0.6.2 代码一致，仅 bump 版本号以满足
+  Marketplace 不能复用 Open VSX 已占版本的要求。Marketplace 的 `publisher` 为 `WenjieFan`
+  （Open VSX 仍用 `yzt000000`，两边是独立渠道），`displayName` 统一为
+  `SystemVerilog Formatter`。
+
 ## [0.6.2] - 2026-10-29
 
 ### Fixed

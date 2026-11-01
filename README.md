@@ -1,5 +1,13 @@
 # SVF — SystemVerilog Formatter for VSCode
 
+<p align="center"><img src="https://raw.githubusercontent.com/yzt000000/sv-formatter/master/images/demo.gif" width="600" alt="module format demo"/></p>
+
+<p align="center"><em>模块头齐左缩进 · 端口五列对齐 · 多信号展开 · 运算符间距 · 控制语句合并</em></p>
+
+<p align="center"><img src="https://raw.githubusercontent.com/yzt000000/sv-formatter/master/images/demo-instance.gif" width="600" alt="instance format demo"/></p>
+
+<p align="center"><em>实例端口一行一个 · <code>.port(expr)</code> 列对齐 · 参数表 <code>#(.A(1))</code> 展开</em></p>
+
 基于 [tree-sitter-systemverilog](https://github.com/gmlarumbe/tree-sitter-systemverilog)（IEEE 1800-2023 完整语法）实现的 SystemVerilog 格式化插件。
 
 设计原则：**缩进由语法结构推导，而非从原文猜测**。任意缩进混乱的输入都会收敛到同一规范形式，因此格式化结果稳定且幂等。
