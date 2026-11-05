@@ -1267,6 +1267,118 @@ console.log('\n=== fragment formatting tests ===');
     JSON.stringify(plain.text));
 }
 
+// ---------------------------------------------------- class / SVA / literals
+
+// Class headers carry the parameter list between the name and `extends`;
+// `implements` is a list of interface class types; `virtual` is a keyword
+// prefix that must survive.
+{
+  const src = [
+    'virtual class drv #(type T = int, int N = 4) extends uvm_driver #(T) implements my_if;',
+    '  rand T data;',
+    'endclass',
+  ].join('\n');
+  const r = runCase('class-header', src);
+  check('class-header: full header kept',
+    /^virtual class drv #\(type T = int, int N = 4\) extends uvm_driver #\(T\) implements my_if;$/m
+      .test(r.text), r.text);
+  check('class-header: no phantom extends', !/extends #\(/.test(r.text), r.text);
+  const again = format(r.text, { indentSize: 2 });
+  check('class-header: parameter list survives a second pass',
+    /#\(type T = int, int N = 4\)/.test(again.text), again.text);
+}
+
+// `?` inside a based number is a casez/casex wildcard digit, not a ternary.
+{
+  const src = [
+    'module cz;',
+    '  always_comb begin',
+    '    casez (sel)',
+    "      4'b1???: y = 1;",
+    "      4'b?1??: y = 2;",
+    "      4'b1x?z: y = 3;",
+    '      default: y = 0;',
+    '    endcase',
+    '  end',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('casez-wildcard', src);
+  check('casez-wildcard: wildcard digits intact',
+    ["4'b1???", "4'b?1??", "4'b1x?z"].every((t) => r.text.includes(t)), r.text);
+  check('casez-wildcard: output parses', r.hadError === false, String(r.hadError));
+}
+
+// SVA implication operators are single tokens.
+{
+  const src = [
+    'module sva;',
+    '  property p;',
+    '    @(posedge clk) a |-> ##1 b;',
+    '  endproperty',
+    '  property q;',
+    '    @(posedge clk) c |=> d;',
+    '  endproperty',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('sva-operators', src);
+  check('sva-operators: |-> intact', r.text.includes('|->'), r.text);
+  check('sva-operators: |=> intact', r.text.includes('|=>'), r.text);
+  check('sva-operators: pipe not separated', !/\|\s+-/.test(r.text), r.text);
+  check('sva-operators: output parses', r.hadError === false, String(r.hadError));
+}
+
+// A real literal's exponent sign belongs to the literal.
+{
+  const src = [
+    'module re;',
+    '  real a = 1.0e-3;',
+    '  real b = 2.5E+6;',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('real-exponent', src);
+  check('real-exponent: negative exponent kept', r.text.includes('1.0e-3'), r.text);
+  check('real-exponent: positive exponent kept', r.text.includes('2.5E+6'), r.text);
+}
+
+// A `//` comment inside a statement must not swallow the next line.
+{
+  const src = [
+    'module lc;',
+    '  assign x = a + // plus',
+    '    b;',
+    'endmodule',
+  ].join('\n');
+  const r = runCase('line-comment-continuation', src);
+  check('line-comment-continuation: continuation kept', /\bb;\s*$/m.test(r.text), r.text);
+  check('line-comment-continuation: output parses', r.hadError === false, String(r.hadError));
+}
+
+// Output verification: when an emitter bug produces invalid SV, the formatter
+// must return the original text instead of the broken result.
+{
+  const src = [
+    'module rc;',
+    '  initial begin',
+    '    randcase',
+    '      1: a = 1;',
+    '      2: a = 2;',
+    '    endcase',
+    '  end',
+    'endmodule',
+    '',
+  ].join('\n');
+  const broken = format(src, { verifyOutput: false });
+  check('verify-output: fixture breaks the emitter',
+    broken.hadError === false && /endcase[\s\S]*endcase/.test(broken.text), broken.text);
+
+  const guarded = format(src, { indentSize: 2 });
+  check('verify-output: guard returns the original text',
+    guarded.hadError === true && guarded.text === src, guarded.text);
+  const guardedAgain = format(guarded.text, { indentSize: 2 });
+  check('verify-output: guard is idempotent', guardedAgain.text === guarded.text,
+    guardedAgain.text);
+}
+
 // ---------------------------------------------------------------- summary
 console.log('\n=== summary ===');
 console.log(`passed: ${passed}`);

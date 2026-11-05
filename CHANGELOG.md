@@ -5,6 +5,36 @@ All notable changes to this extension are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.6] - 2026-11-06
+
+### Changed
+
+- **新的扩展图标：黑底黄字的 SV 字标。** 256×256 PNG，主体按外接框裁剪后仅留
+  5.5% 边距，替代原先的深蓝/青色图标。
+
+## [0.6.5] - 2026-11-05
+
+### Added
+
+- **`verifyOutput`（默认开启）：格式化后重新解析结果，无法解析时保留原文。**
+  防止发射器缺陷把能解析的输入改成不能解析的输出；代价是每次格式化多一次解析，
+  不需要时设为 `false`。
+
+### Fixed
+
+- **`class` 头部被改坏：参数列表被当成基类，`implements` 与 `virtual` 丢失。**
+  `class c #(int W = 8);` 曾输出 `class c extends #(int W = 8);`，二次格式化后参数彻底
+  丢失；`class c extends b implements i1, i2;` 的 `implements` 列表与 `virtual class`
+  的 `virtual` 也被丢弃。现在参数列表留在类名之后，`extends` / `implements` / 关键字
+  前缀按语法树原样重建。
+- **`casez` / `casex` 通配符 `?` 被当成三目运算符。** `4'b1???` 曾输出 `4'b1 ??? :`，
+  再次格式化变成 `4'b1,??? :`，语义与语法都被破坏。数字字面量内部的 `?` 现在原样保留。
+- **SVA 蕴含运算符被拆开。** `a |-> b` 曾输出 `a | -> b`；`|->`、`|=>`、`#-#`、`#=#`、
+  `->>` 现在作为单个 token 透传。
+- **实数指数被拆开。** `1.0e-3` 曾输出 `1.0e - 3`，输出无法解析；指数符号现在属于字面量。
+- **语句中的行尾注释吞掉后续代码。** `assign x = a + // note` 换行后的 `b;` 曾被并进
+  注释、从代码中消失；现在保留原有换行。
+
 ## [0.6.3] - 2026-11-01
 
 ### Changed

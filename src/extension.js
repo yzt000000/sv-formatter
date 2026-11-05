@@ -30,6 +30,7 @@ function readConfig() {
     maxConsecutiveBlankLines: get('maxConsecutiveBlankLines', 1),
     ensureTrailingNewline: get('ensureTrailingNewline', true),
     formatOnParseError: get('formatOnParseError', false),
+    verifyOutput: get('verifyOutput', true),
   };
 }
 

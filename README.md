@@ -339,6 +339,7 @@ code --install-extension sv-formatter-0.6.2.vsix
 | `maxConsecutiveBlankLines` | `1` | 最多保留几个连续空行 |
 | `ensureTrailingNewline` | `true` | 文件以恰好一个换行结尾 |
 | `formatOnParseError` | `false` | 有语法错误时是否仍然格式化（默认关闭，避免重排不完整代码） |
+| `verifyOutput` | `true` | 格式化后重新解析结果，无法解析则保留原文；每次多一次解析 |
 | `caseItemOnSameLine` | `true` | `case` 单语句项与标签同行（`IDLE: state <= RUN;`） |
 | `alignTerminatorMaxPad` | `16` | 行尾 `;` 列对齐允许的最大填充，超出则放弃该列；`0` 不限制 |
 | `trace.server` | `off` | 输出格式化请求日志（`messages`），排查插件自身问题时用 |

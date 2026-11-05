@@ -711,19 +711,35 @@ class Formatter {
     const kids = namedChildren(node);
     const items = [];
     let nameNode = null;
-    let baseNode = null;
+    let paramNode = null;
+    let extendsNode = null;
+    const implementsNodes = [];
 
     for (const k of kids) {
       if (k.type === 'class_item') { items.push(k); continue; }
       if (!nameNode && k.type === 'simple_identifier') { nameNode = k; continue; }
-      if (!baseNode) baseNode = k;
+      // `class c #(int W = 8)` — the parameter list belongs between the class
+      // name and `extends`, not in the inheritance clause.
+      if (k.type === 'parameter_port_list') { paramNode = k; continue; }
+      // `implements i1, i2` — one node per interface class, not a single list.
+      if (k.type === 'interface_class_type') { implementsNodes.push(k); continue; }
+      if (!extendsNode) extendsNode = k;
+      else implementsNodes.push(k);
     }
 
-    let head = 'class';
+    // `virtual class c` / `interface class c` — the keyword prefix is an
+    // anonymous token, so read it back from the source instead of hardcoding
+    // `class`.
+    const headEnd = nameNode ? nameNode.startIndex : node.startIndex;
+    let head = collapse(this.src.slice(node.startIndex, headEnd)).trim() || 'class';
     if (nameNode) head += ' ' + nameNode.text;
-    if (baseNode) {
-      const base = collapse(baseNode.text);
-      head += /^(extends|implements)\b/.test(base) ? ' ' + base : ' extends ' + base;
+    if (paramNode) head += ' ' + collapse(paramNode.text);
+    if (extendsNode) {
+      const base = collapse(extendsNode.text).replace(/^extends\s+/, '');
+      head += ' extends ' + base;
+    }
+    if (implementsNodes.length) {
+      head += ' implements ' + implementsNodes.map((n) => collapse(n.text)).join(', ');
     }
     this.emit(head + ';', { indent: this.indent, group: 'class-head' });
 
@@ -821,7 +837,19 @@ class Formatter {
   }
 
   continuousAssign(node) {
-    this.emit(this.text(node), { indent: this.indent, group: 'assign' });
+    const text = this.text(node);
+    // A `//` comment runs to the end of its logical line, so a declaration that
+    // straddles one (`assign x = a + // note\n b;`) must keep the break —
+    // collapsing would turn the rest of the expression into part of the
+    // comment.
+    if (/\/\/[^\n]*\n/.test(text)) {
+      for (const ln of nodeLines(text)) {
+        const t = ln.trim();
+        if (t) this.emit(t, { indent: this.indent, group: 'assign' });
+      }
+      return;
+    }
+    this.emit(text, { indent: this.indent, group: 'assign' });
   }
 
   // ------------------------------------------------------- procedural
@@ -1220,7 +1248,19 @@ class Formatter {
     // statements (the semicolon belongs to the enclosing statement_item), and a
     // RHS ending in `}` defeats a suffix test. Read the source instead.
     const semi = this.trailingSemicolon(node);
-    this.emit(semi ? text + semi : text, { indent: this.indent, group: 'stmt' });
+    const full = semi ? text + semi : text;
+
+    // A `//` comment swallows the rest of its rendered line. When the statement
+    // straddles a line break (`a + // note\n b;`), collapsing would comment out
+    // the code that follows, so keep the author's line structure.
+    if (/\/\/[^\n]*\n/.test(full)) {
+      for (const ln of nodeLines(full)) {
+        const t = ln.trim();
+        if (t) this.emit(t, { indent: this.indent, group: 'stmt' });
+      }
+      return;
+    }
+    this.emit(full, { indent: this.indent, group: 'stmt' });
   }
 
   /**
@@ -1349,7 +1389,11 @@ const NEEDS_TERMINATOR = new Set([
  *   - an operator with no left operand (`(-1)`, `*ptr`) is unary and keeps its
  *     tight spacing.
  */
-const ATOMIC_OPS = ['<<<=', '>>>=', '::', '++', '--', '**', '->', '.*'];
+// SVA operators are single tokens: `a |-> b` must not be split into `a | -> b`.
+const ATOMIC_OPS = [
+  '<<<=', '>>>=', '|->', '|=>', '#-#', '#=#', '->>',
+  '::', '++', '--', '**', '->', '.*',
+];
 const BINARY_OPS = [
   '<<<', '>>>', '<<=', '>>=', '===', '!==', '==?', '!=?',
   '<<', '>>', '<=', '>=', '==', '!=', '&&', '||',
@@ -1358,6 +1402,44 @@ const BINARY_OPS = [
 ];
 const ALL_OPS = ATOMIC_OPS.concat(BINARY_OPS).sort((a, b) => b.length - a.length);
 const OPERAND_END = /[A-Za-z0-9_$'\]\)}]/;
+
+/**
+ * Whether `text[i]` lies inside the digits of a based number (`4'b1???`,
+ * `8'h1e`). The scan walks back to the literal's `'` and validates the base so
+ * a plain identifier or a ternary never matches.
+ */
+function insideBasedNumber(text, i) {
+  let k = i;
+  while (k >= 0 && /[0-9a-fA-FxXzZ?_]/.test(text[k])) k--;
+  if (k < 0 || text[k] !== "'") return false;
+
+  // The character before `'` may be a size (decimal digits) or a delimiter,
+  // but not the tail of an identifier (`foo'b` is not a based number).
+  if (k > 0 && /[A-Za-z_$]/.test(text[k - 1])) return false;
+  let size = k - 1;
+  while (size >= 0 && /[0-9_]/.test(text[size])) size--;
+  if (size + 1 < k && !/^[0-9_]+$/.test(text.slice(size + 1, k))) return false;
+
+  const tail = text.slice(k + 1, i + 1);
+  return /^[sS]?[bodhBODH][0-9a-fA-FxXzZ?_]*$/.test(tail);
+}
+
+/** `4'b1???` / `4'b1x?z` — a wildcard digit, not a ternary operator. */
+function isNumberWildcard(text, i) {
+  return text[i] === '?' && insideBasedNumber(text, i);
+}
+
+/**
+ * The sign of a real literal exponent (`1.0e-3`, `2.5E+6`). `8'h1e-3` is not:
+ * its `e` is a hex digit, handled by the based-number check.
+ */
+function isExponentSign(text, i) {
+  if (text[i] !== '-' && text[i] !== '+') return false;
+  const e = text[i - 1];
+  if (e !== 'e' && e !== 'E') return false;
+  if (i - 2 < 0 || !/[0-9.]/.test(text[i - 2])) return false;
+  return !insideBasedNumber(text, i - 1);
+}
 
 function normalizeSpacing(text, cfg) {
   const wantOps = cfg.spaceAroundBinaryOperators !== false;
@@ -1442,6 +1524,10 @@ function normalizeSpacing(text, cfg) {
       if (op) {
         if (ATOMIC_OPS.includes(op)) { out += op; i += op.length; continue; }
         if (op === '?') {
+          // `4'b1???` / `4'b1x?z` — a `?` inside a based number is a wildcard
+          // digit (casez/casex), not a ternary operator. Splitting it changes
+          // the literal's meaning and the next pass mangles it further.
+          if (isNumberWildcard(text, i)) { out += '?'; i++; continue; }
           const nx = nextReal(i + 1);
           while (out.endsWith(' ') || out.endsWith('\t')) out = out.slice(0, -1);
           const prev = lastReal();
@@ -1471,6 +1557,13 @@ function normalizeSpacing(text, cfg) {
           while (out.endsWith(' ') || out.endsWith('\t')) out = out.slice(0, -1);
           out += ' : ';
           i = nx.at;
+          continue;
+        }
+        // `1.0e-3` is one real literal; splitting the exponent turns it into
+        // two operands and makes the output unparsable.
+        if ((op === '+' || op === '-') && isExponentSign(text, i)) {
+          out += op;
+          i += 1;
           continue;
         }
         const nx = nextReal(i + op.length);
@@ -2487,7 +2580,28 @@ function isAssignCtx(text, i) {
 }
 
 function format(source, config) {
+  const cfg = resolveConfig(config);
   const direct = new Formatter(source, config).format();
+
+  // A formatter must never turn code it accepted into code the grammar rejects.
+  // Re-parsing the output is cheap insurance and catches emitter bugs that the
+  // input parse cannot: falling back to the original text is always safe.
+  //
+  // Only checked when the input parsed. The directive-masking path below is
+  // entered precisely because tree-sitter cannot parse in-parens directives,
+  // so its output legitimately fails to re-parse.
+  if (!direct.hadError) {
+    if (cfg.verifyOutput !== false && direct.text && !textParses(direct.text)) {
+      return { text: source, hadError: true };
+    }
+    return direct;
+  }
+
+  return formatWithDirectiveRecovery(source, config, direct);
+}
+
+/** Format, retrying the in-parens directive masking path only when parsing failed. */
+function formatWithDirectiveRecovery(source, config, direct) {
   if (!direct.hadError) return direct;
 
   // The grammar cannot parse a preprocessor directive that sits *inside* a
@@ -2504,6 +2618,15 @@ function format(source, config) {
   const result = new Formatter(masked.text, config).format();
   if (result.hadError) return direct;
   return { text: restoreDirectives(result.text, masked.map), hadError: false };
+}
+
+/** Whether `text` parses without ERROR / MISSING nodes. */
+function textParses(text) {
+  try {
+    return !getParser().parse(text).rootNode.hasError;
+  } catch (_) {
+    return false;
+  }
 }
 
 const DIRECTIVE_RE = /^\s*`(?:ifdef|ifndef|elsif|else|endif)\b/;

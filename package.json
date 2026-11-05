@@ -2,7 +2,7 @@
   "name": "verilog-systemverilog-formatter",
   "displayName": "SystemVerilog Formatter (SVF)",
   "description": "Structure-driven SystemVerilog formatter: indentation derived from the parse tree, column alignment, macro-safe, and idempotent.",
-  "version": "0.6.3",
+  "version": "0.6.6",
   "publisher": "yzt000000",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -170,6 +170,12 @@
           "default": false,
           "description": "Format even when the source has syntax errors. Off by default to avoid mangling incomplete code.",
           "markdownDescription": "源码有语法错误时仍然格式化。默认关闭——不完整的代码被重排后更难定位问题。"
+        },
+        "systemverilogFormatter.verifyOutput": {
+          "type": "boolean",
+          "default": true,
+          "description": "Re-parse the formatted result and keep the original text when the result no longer parses. Costs one extra parse per format.",
+          "markdownDescription": "格式化后再解析一次结果，若结果无法解析则保留原文。防止格式化器缺陷把合法代码改坏，代价是每次多一次解析。"
         },
         "systemverilogFormatter.trace.server": {
           "type": "string",

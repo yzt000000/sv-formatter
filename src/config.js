@@ -57,6 +57,10 @@ const DEFAULTS = {
   ensureTrailingNewline: true,
   // Safety
   formatOnParseError: false,
+  // Re-parse the formatted output and fall back to the original text when it no
+  // longer parses. Guards against a subtle emitter bug turning valid input into
+  // invalid output; costs one extra parse per format.
+  verifyOutput: true,
 };
 
 function resolveConfig(partial) {
